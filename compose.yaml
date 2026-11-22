@@ -1,0 +1,87 @@
+name: vag-erp
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: vag
+      POSTGRES_USER: vag
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vag -d vag"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+  migrate:
+    build:
+      context: .
+      target: build
+    environment: &erp_env
+      DATABASE_URL: postgresql://vag:${POSTGRES_PASSWORD}@db:5432/vag
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:?Set BETTER_AUTH_URL}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET}
+      BOOTSTRAP_EMAIL: ${BOOTSTRAP_EMAIL:-}
+      BOOTSTRAP_NAME: ${BOOTSTRAP_NAME:-}
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-}
+      VAG_DEMO: ${VAG_DEMO:-false}
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["npm","run","db:migrate"]
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      <<: *erp_env
+      BOOTSTRAP_PASSWORD: ""
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+    volumes:
+      - attachments:/attachments
+    healthcheck:
+      test: ["CMD","node","-e","fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  backup:
+    profiles: ["operations"]
+    image: postgres:17
+    environment:
+      PGHOST: db
+      PGUSER: vag
+      PGDATABASE: vag
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      BACKUP_KEEP: ${BACKUP_KEEP:-4}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - attachments:/attachments:ro
+      - ./backups:/backups
+      - ./scripts:/ops:ro
+    entrypoint: ["sh","/ops/backup.sh"]
+  restore:
+    profiles: ["operations"]
+    image: postgres:17
+    environment:
+      PGHOST: db
+      PGUSER: vag
+      PGDATABASE: vag
+      RESTORE_ATTACHMENT_OWNER: "1000:1000"
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - attachments:/attachments
+      - ./backups:/backups:ro
+      - ./scripts:/ops:ro
+    entrypoint: ["sh","/ops/restore.sh"]
+volumes:
+  pgdata:
+  attachments:
+

@@ -1,0 +1,11 @@
+node_modules
+.next
+.git
+.env
+.env.*
+data
+backups
+test-results
+*.tsbuildinfo
+418990962_122111300426166913_9006186539920091446_n.jpg
+

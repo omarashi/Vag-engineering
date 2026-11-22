@@ -1,0 +1,490 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  owner
+  accountant
+  technician
+}
+enum PartyKind {
+  customer
+  supplier
+}
+enum DocumentKind {
+  visit
+  job
+  appointment
+  // Retired. Kept so existing records and historical invoice links remain readable.
+  quote
+  purchaseOrder
+  purchase
+  invoice
+  customerOpening
+  supplierOpening
+  credit
+  supplierCredit
+  expense
+  payroll
+  employeeOpening
+  advanceOpening
+}
+enum LineKind {
+  labor
+  service
+  part
+  supplied
+}
+enum PaymentKind {
+  receipt
+  supplierPayment
+  refund
+  supplierRefund
+  expensePayment
+  salaryPayment
+  advance
+  transfer
+  contribution
+  withdrawal
+  cashOpening
+}
+enum MovementKind {
+  opening
+  purchase
+  sale
+  reserve
+  release
+  issue
+  jobReturn
+  customerReturn
+  supplierReturn
+  adjustment
+  reversal
+}
+
+model User {
+  id            String   @id
+  name          String
+  email         String   @unique
+  emailVerified Boolean  @default(false)
+  image         String?
+  role          Role     @default(technician)
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  sessions      Session[]
+  accounts      Account[]
+  audit         Audit[]
+}
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+model Account {
+  id                    String   @id
+  accountId             String
+  providerId            String
+  userId                String
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  user                  User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+}
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+}
+
+model Setting {
+  key   String @id
+  value Json
+}
+model Catalog {
+  id          String @id @default(cuid())
+  group       String
+  name        String
+  description String @default("")
+  price       BigInt @default(0)
+  archived    Boolean @default(false)
+  version     Int @default(0)
+
+  @@unique([group, name])
+}
+model Party {
+  id        String @id @default(cuid())
+  kind      PartyKind
+  name      String
+  phone     String @default("")
+  contact   String @default("")
+  address   String @default("")
+  note      String @default("")
+  archived  Boolean @default(false)
+  version   Int @default(0)
+  createdAt DateTime @default(now())
+  vehicles  Vehicle[]
+  documents Document[]
+  payments  Payment[]
+
+  @@index([kind, archived, name])
+  @@index([phone])
+}
+model Vehicle {
+  id           String @id @default(cuid())
+  partyId      String
+  party        Party @relation(fields: [partyId], references: [id])
+  plate        String @default("")
+  make         String @default("")
+  model        String
+  color        String @default("")
+  year         Int?
+  stage        String @default("")
+  mileage      Int?
+  vin          String? @unique
+  engine       String @default("")
+  transmission String @default("")
+  note         String @default("")
+  archived     Boolean @default(false)
+  version      Int @default(0)
+  createdAt    DateTime @default(now())
+  documents    Document[]
+  history      VehicleEvent[]
+  attachments  Attachment[]
+
+  @@index([partyId])
+  @@index([plate])
+}
+model VehicleEvent {
+  id         String @id @default(cuid())
+  vehicleId  String
+  vehicle    Vehicle @relation(fields: [vehicleId], references: [id])
+  at         DateTime @default(now())
+  kind       String
+  actorId    String
+  data       Json
+
+  @@index([vehicleId, at])
+}
+model Employee {
+  id          String @id @default(cuid())
+  name        String
+  phone       String @default("")
+  arrangement String @default("")
+  rate        BigInt @default(0)
+  weeklySalary BigInt?
+  paidDaysPerWeek Int @default(6)
+  effectiveAt DateTime @default(now())
+  startedAt   DateTime @default(now())
+  endedAt     DateTime?
+  dismissalReason String @default("")
+  note        String @default("")
+  archived    Boolean @default(false)
+  version     Int @default(0)
+  assignments Assignment[]
+  documents   Document[]
+  payments    Payment[]
+  rates       EmployeeRate[]
+  absences    EmployeeAbsence[]
+}
+model EmployeeAbsence {
+  id          String @id @default(cuid())
+  employeeId  String
+  employee    Employee @relation(fields: [employeeId], references: [id])
+  day         DateTime @db.Date
+  actorId     String
+  voidedAt    DateTime?
+  deductSalary Boolean @default(false)
+  deductionFromDay DateTime? @db.Date
+  deductionEntryId String? @unique
+  deductionEntry PayEntry? @relation(fields: [deductionEntryId], references: [id], onDelete: Restrict)
+
+  @@unique([employeeId, day])
+}
+model EmployeeRate {
+  id          String @id @default(cuid())
+  employeeId  String
+  employee    Employee @relation(fields: [employeeId], references: [id])
+  amount      BigInt
+  arrangement String
+  effectiveAt DateTime
+  actorId     String
+
+  @@index([employeeId, effectiveAt])
+}
+model Part {
+  id          String @id @default(cuid())
+  code        String @unique
+  name        String
+  category    String @default("")
+  oem         String @default("")
+  brand       String @default("")
+  unit        String @default("pc")
+  location    String @default("")
+  note        String @default("")
+  onHand      Decimal @default(0) @db.Decimal(16,3)
+  reserved    Decimal @default(0) @db.Decimal(16,3)
+  minimum     Decimal @default(0) @db.Decimal(16,3)
+  cost        BigInt @default(0)
+  price       BigInt @default(0)
+  archived    Boolean @default(false)
+  version     Int @default(0)
+  lines       Line[]
+  movements   StockMovement[]
+  jobStock    JobStock[]
+
+  @@index([name])
+}
+model Document {
+  id          String @id @default(cuid())
+  number      String @unique
+  kind        DocumentKind
+  status      String
+  version     Int @default(0)
+  at          DateTime @default(now())
+  dueAt       DateTime?
+  partyId     String?
+  party       Party? @relation(fields: [partyId], references: [id])
+  vehicleId   String?
+  vehicle     Vehicle? @relation(fields: [vehicleId], references: [id])
+  employeeId  String?
+  employee    Employee? @relation(fields: [employeeId], references: [id])
+  sourceId    String?
+  source      Document? @relation("Source", fields: [sourceId], references: [id])
+  related     Document[] @relation("Source")
+  reference   String @default("")
+  category    String @default("")
+  title       String @default("")
+  note        String @default("")
+  total       BigInt @default(0)
+  metadata    Json @default("{}")
+  snapshot    Json @default("{}")
+  createdBy   String
+  createdAt   DateTime @default(now())
+  lines       Line[]
+  assignments Assignment[]
+  jobStock    JobStock[]
+  movements   StockMovement[]
+  allocations Allocation[]
+  attachments Attachment[]
+  payroll     PayEntry[]
+
+  @@index([kind, at])
+  @@index([partyId, kind])
+  @@index([vehicleId, at])
+  @@index([employeeId, kind])
+  @@index([sourceId, kind])
+}
+model Line {
+  id          String @id @default(cuid())
+  documentId  String
+  document    Document @relation(fields: [documentId], references: [id])
+  kind        LineKind
+  description String
+  partId      String?
+  part        Part? @relation(fields: [partId], references: [id])
+  sourceId    String?
+  source      Line? @relation("LineSource", fields: [sourceId], references: [id])
+  related     Line[] @relation("LineSource")
+  quantity    Decimal @db.Decimal(16,3)
+  price       BigInt
+  discount    BigInt @default(0)
+  total       BigInt
+  costTotal   BigInt @default(0)
+  stockQty    Decimal @default(0) @db.Decimal(16,3)
+  position    Int
+
+  @@index([documentId, position])
+  @@index([sourceId])
+}
+model Assignment {
+  documentId String
+  employeeId String
+  document   Document @relation(fields: [documentId], references: [id])
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  completed  Boolean @default(false)
+
+  @@id([documentId, employeeId])
+  @@index([employeeId])
+}
+model JobStock {
+  documentId  String
+  partId      String
+  document    Document @relation(fields: [documentId], references: [id])
+  part        Part @relation(fields: [partId], references: [id])
+  reserved    Decimal @default(0) @db.Decimal(16,3)
+  issued      Decimal @default(0) @db.Decimal(16,3)
+  issuedCost  BigInt @default(0)
+
+  @@id([documentId, partId])
+}
+model StockMovement {
+  id         String @id @default(cuid())
+  kind       MovementKind
+  partId     String
+  part       Part @relation(fields: [partId], references: [id])
+  documentId String?
+  document   Document? @relation(fields: [documentId], references: [id])
+  quantity   Decimal @db.Decimal(16,3)
+  reserve    Decimal @default(0) @db.Decimal(16,3)
+  unitCost   BigInt
+  totalCost  BigInt
+  reason     String @default("")
+  at         DateTime @default(now())
+  actorId    String
+
+  @@index([partId, at])
+  @@index([documentId])
+}
+model MoneyAccount {
+  id        String @id @default(cuid())
+  name      String @unique
+  kind      String
+  archived  Boolean @default(false)
+  version   Int @default(0)
+  movements CashMovement[]
+  counts    CashCount[]
+}
+model CashCount {
+  id          String @id @default(cuid())
+  accountId   String
+  account     MoneyAccount @relation(fields: [accountId], references: [id])
+  actual      BigInt
+  expected    BigInt
+  note        String
+  at          DateTime @default(now())
+  actorId     String
+}
+
+model Payment {
+  id            String @id @default(cuid())
+  number        String @unique
+  kind          PaymentKind
+  at            DateTime @default(now())
+  amount        BigInt
+  method        String
+  partyId       String?
+  party         Party? @relation(fields: [partyId], references: [id])
+  employeeId    String?
+  employee      Employee? @relation(fields: [employeeId], references: [id])
+  note          String @default("")
+  snapshot      Json @default("{}")
+  reversedAt    DateTime?
+  reverseReason String?
+  actorId       String
+  movements     CashMovement[]
+  allocations   Allocation[]
+
+  @@index([partyId, at])
+  @@index([employeeId, at])
+  @@index([kind, at])
+}
+model Allocation {
+  id         String @id @default(cuid())
+  paymentId  String
+  payment    Payment @relation(fields: [paymentId], references: [id])
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id])
+  amount     BigInt
+  at         DateTime @default(now())
+  releasedAt DateTime?
+  reason     String?
+
+  @@index([paymentId])
+  @@index([documentId])
+}
+model CashMovement {
+  id        String @id @default(cuid())
+  paymentId String
+  payment   Payment @relation(fields: [paymentId], references: [id])
+  accountId String
+  account   MoneyAccount @relation(fields: [accountId], references: [id])
+  amount    BigInt
+  at        DateTime @default(now())
+  reversal  Boolean @default(false)
+  actorId   String
+
+  @@index([accountId, at])
+  @@index([paymentId])
+}
+model PayEntry {
+  id         String @id @default(cuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id])
+  kind       String
+  amount     BigInt
+  note       String @default("")
+  reference  String @default("")
+  actorId    String
+  at         DateTime @default(now())
+  absence    EmployeeAbsence?
+
+  @@index([documentId, at])
+}
+model Attachment {
+  id         String @id @default(cuid())
+  documentId String?
+  document   Document? @relation(fields: [documentId], references: [id])
+  vehicleId  String?
+  vehicle    Vehicle? @relation(fields: [vehicleId], references: [id])
+  name       String
+  mime       String
+  size       Int
+  key        String @unique
+  actorId    String
+  at         DateTime @default(now())
+
+  @@index([documentId])
+  @@index([vehicleId])
+}
+model Audit {
+  id        String @id @default(cuid())
+  actorId   String
+  actor     User @relation(fields: [actorId], references: [id])
+  action    String
+  entity    String
+  entityId  String
+  before    Json?
+  after     Json?
+  at        DateTime @default(now())
+
+  @@index([entity, entityId, at])
+  @@index([at])
+}
+model Request {
+  key       String @id
+  actorId   String
+  hash      String
+  result    Json
+  createdAt DateTime @default(now())
+}
+model Sequence {
+  scope   String @id
+  current Int
+}
+
