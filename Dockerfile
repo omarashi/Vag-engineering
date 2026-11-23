@@ -5,7 +5,6 @@ ENV NEXT_TELEMETRY_DISABLED=1
 COPY package*.json ./
 RUN npm ci --ignore-scripts
 COPY . .
-RUN npm run db:generate
 RUN BETTER_AUTH_URL=http://localhost:3000 BETTER_AUTH_SECRET=build-only-placeholder-never-used-at-runtime npm run build
 
 FROM node:22-bookworm-slim AS runtime
