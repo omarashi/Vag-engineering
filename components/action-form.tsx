@@ -9,8 +9,12 @@ import { message, translate, type Language } from "@/lib/locale";
 import type { VisitPartInput } from "@/lib/visit-items";
 import { parseMoney } from "@/lib/decimal-input";
 import { requestKey } from "@/lib/request-key";
+import { postFormAction, type PendingAction } from "@/lib/action-request";
+import { prepareWorkshopPhotos } from "@/lib/prepare-workshop-photo";
+import { uploadWorkshopPhotos } from "@/lib/upload-workshop-photos";
 import { VisitPartsFields, type VisitPartOption } from "./visit-parts-fields";
 import { VisitInvoiceFields, type VisitInvoicePricing } from "./visit-invoice-fields";
+import { WorkshopPhotoPicker } from "./workshop-photo-picker";
 
 export type Option = { value: string; name: string; related?: string; description?: string };
 export type Field = {
@@ -24,24 +28,32 @@ export type Field = {
 };
 export type ActionSpec = {
   action: "customer" | "vehicle" | "visit" | "jobIntake" | "jobUpdate" | "visitInvoice" | "visitReceipt" | "customerDebtPayment" |
-    "weeklyPayroll" | "employeeDismiss"; title: string; submitLabel?: string; fields: Field[]; hidden?: Record<string, unknown>;
+    "payment" | "weeklyPayroll" | "employeeDismiss" | "supplierStock" | "supplierQuote"; title: string; submitLabel?: string; fields: Field[]; hidden?: Record<string, unknown>;
   destination: string; triggerLabel?: string; relatedLink?: { field: string; owner: string; href: string; label: string };
   partOptions?: VisitPartOption[];
+  partsLabel?: string;
+  photos?: { label: string; limit: number };
   invoicePricing?: VisitInvoicePricing;
   formSummary?: { label: string; amount: string; note?: string; name?: string };
   alternate?: { when: { key: string; value: string }; destination: string; submitLabel: string };
 };
 
+type PendingPhotoUpload = { id: string; href: string; key: string; photos: File[] };
+
 export function ActionForm({ lang, spec, primary = false, auto = false }: { lang: Language; spec: ActionSpec; primary?: boolean; auto?: boolean }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const formDetails = useRef<HTMLDetailsElement>(null);
-  const request = useRef<{ key: string; body: string; uncertain: boolean } | null>(null);
+  const request = useRef<PendingAction | null>(null);
+  const preparedPhotos = useRef<File[] | null>(null);
   const formId = useId();
   const router = useRouter();
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [error, setError] = useState("");
-  const [working, setWorking] = useState(false);
+  const [working, setWorking] = useState<"Saving…" | "Preparing photos…" | "Uploading photos…" | null>(null);
+  const [photoFiles, setPhotoFiles] = useState<File[]>([]);
+  const [pendingUpload, setPendingUpload] = useState<PendingPhotoUpload | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const busy = working !== null;
   const prices = (values.servicePrices ?? {}) as Record<string, string>;
   const t = (key: string) => translate(lang, key);
   const fields = spec.fields.filter(({ showWhen }) => !showWhen || values[showWhen.key] === showWhen.value);
@@ -78,10 +90,7 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
     return parent ? options.filter((option) => option.related === values[parent]) : options;
   }
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (working) return;
-    const form = event.currentTarget;
+  function validate(form: HTMLFormElement) {
     const invalidPrice = spec.invoicePricing?.work.find(({ service }) => {
       const price = parseMoney(prices[service]);
       return price === null || price < 0n;
@@ -89,7 +98,7 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
     if (invalidPrice) {
       setError("needServicePrices");
       form.querySelector<HTMLElement>('[name="price-' + invalidPrice.service + '"]')?.focus();
-      return;
+      return false;
     }
     const missing = fields.find((field) => {
       if (!field.required) return false;
@@ -100,42 +109,58 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
       setError(missing?.type === "checkboxes" ? "needServices" : "invalid");
       const first = missing ? form.querySelector<HTMLElement>('[name="' + missing.key + '"]') : form.querySelector<HTMLElement>(":invalid");
       first?.focus();
-      return;
+      return false;
     }
-    const body = JSON.stringify(values);
-    setWorking(true);
+    return true;
+  }
+
+  function goToSavedRecord(href: string) {
+    dialog.current?.close();
+    router.push(href);
+    router.refresh();
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy || (!pendingUpload && !validate(event.currentTarget))) return;
+    setWorking(pendingUpload ? "Uploading photos…" : photoFiles.length && !preparedPhotos.current ? "Preparing photos…" : "Saving…");
     setError("");
     try {
-      let response: Response | undefined;
-      if (request.current?.uncertain) {
-        const existing = await fetch("/api/requests/" + request.current.key, { cache: "no-store" });
-        if (existing.ok) response = existing;
-        else if (existing.status !== 404 || request.current.body !== body) throw Error();
+      let upload = pendingUpload;
+      if (!upload) {
+        const body = JSON.stringify(values);
+        if (photoFiles.length && !preparedPhotos.current) {
+          try {
+            preparedPhotos.current = await prepareWorkshopPhotos(photoFiles);
+          } catch {
+            setError("invalidPhoto");
+            return;
+          }
+        }
+        setWorking("Saving…");
+        const { ok, data: result } = await postFormAction(spec.action, body, request);
+        if (!ok) {
+          if (result.error === "lowerMileage" && formDetails.current) formDetails.current.open = true;
+          setError(result.error ?? "serverError");
+          return;
+        }
+        const target = new URL(submission.destination.replace("$id", encodeURIComponent(result.id)), window.location.origin);
+        target.searchParams.set("saved", result.warning === "duplicateParty" ? "duplicate" : "1");
+        const href = target.pathname + target.search;
+        if (!preparedPhotos.current?.length) {
+          goToSavedRecord(href);
+          return;
+        }
+        upload = { id: result.id, href, key: requestKey(), photos: preparedPhotos.current };
+        setPendingUpload(upload);
       }
-      if (!response) {
-        if (!request.current || request.current.body !== body) request.current = { key: requestKey(), body, uncertain: false };
-        response = await fetch("/api/actions/" + spec.action, {
-          method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": request.current.key }, body,
-        });
-      }
-      const result = await response.json();
-      if (!response.ok) {
-        if (response.status >= 500 && request.current) request.current.uncertain = true;
-        else request.current = null;
-        if (result.error === "lowerMileage" && formDetails.current) formDetails.current.open = true;
-        setError(result.error ?? "serverError");
-        return;
-      }
-      request.current = null;
-      dialog.current?.close();
-      const target = new URL(submission.destination.replace("$id", encodeURIComponent(result.id)), window.location.origin);
-      target.searchParams.set("saved", result.warning === "duplicateParty" ? "duplicate" : "1");
-      router.push(target.pathname + target.search);
-      router.refresh();
+      setWorking("Uploading photos…");
+      const failure = await uploadWorkshopPhotos(upload.id, upload.photos, upload.key);
+      if (failure) setError(failure);
+      else goToSavedRecord(upload.href);
     } catch {
-      if (request.current) request.current.uncertain = true;
       setError("network");
-    } finally { setWorking(false); }
+    } finally { setWorking(null); }
   }
 
   function renderField(field: Field) {
@@ -211,32 +236,52 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
   return <>
     <Button type="button" variant={primary ? "primary" : "secondary"} onClick={open}>{primary && <Plus size={16}/>} {t(spec.triggerLabel ?? spec.title)}</Button>
     <dialog className="dialog log-dialog" ref={dialog} aria-label={t(spec.title)}
-      onClose={() => { if (!dialog.current?.open) setShowForm(false); }}
-      onCancel={(event) => { if (working || uncertain) event.preventDefault(); }}>
+      onClose={() => {
+        if (dialog.current?.open) return;
+        setShowForm(false);
+        setPhotoFiles([]);
+        preparedPhotos.current = null;
+        setPendingUpload(null);
+      }}
+      onCancel={(event) => { if (busy || uncertain || pendingUpload) event.preventDefault(); }}>
       {showForm && <form onSubmit={submit} noValidate>
         <header className="dialog-head"><h2>{t(spec.title)}</h2>
-          <button className="icon-button" type="button" disabled={working || uncertain} aria-label={t("Close")} onClick={() => dialog.current?.close()}><X size={21}/></button>
+          <button className="icon-button" type="button" disabled={busy || uncertain || Boolean(pendingUpload)} aria-label={t("Close")} onClick={() => dialog.current?.close()}><X size={21}/></button>
         </header>
         <div className="dialog-body">
-          {spec.formSummary && <div className="payment-form-summary">
-            {spec.formSummary.name && <strong className="payment-summary-customer"><bdi>{spec.formSummary.name}</bdi></strong>}
-            <div><strong>{t(spec.formSummary.label)}</strong><bdi>{spec.formSummary.amount}</bdi></div>
-            {spec.formSummary.note && <p>{t(spec.formSummary.note)}</p>}
-          </div>}
-          {spec.invoicePricing && <VisitInvoiceFields lang={lang} pricing={spec.invoicePricing} prices={prices}
-            onChange={(next) => update("servicePrices", next)}/>}
-          <div className="form-grid">{fields.filter((field) => !field.advanced).map(renderField)}</div>
-          {spec.partOptions && <VisitPartsFields lang={lang} options={spec.partOptions} parts={(values.parts ?? []) as VisitPartInput[]}
-            onChange={(parts) => update("parts", parts)}/>}
-          {advanced.length > 0 && <details className="log-optional" ref={formDetails}>
-            <summary>{t("More details")}<ChevronDown size={16}/></summary>
-            <div className="form-grid">{advanced.map(renderField)}</div>
-          </details>}
+          {pendingUpload ? <p className="notice" role="status">{t("Job saved. You can retry the photo upload or continue.")}</p> :
+            <div className="contents" inert={busy}>
+              {spec.formSummary && <div className="payment-form-summary">
+                {spec.formSummary.name && <strong className="payment-summary-customer"><bdi>{spec.formSummary.name}</bdi></strong>}
+                <div><strong>{t(spec.formSummary.label)}</strong><bdi>{spec.formSummary.amount}</bdi></div>
+                {spec.formSummary.note && <p>{t(spec.formSummary.note)}</p>}
+              </div>}
+              {spec.invoicePricing && <VisitInvoiceFields lang={lang} pricing={spec.invoicePricing} prices={prices}
+                onChange={(next) => update("servicePrices", next)}/>}
+              <div className="form-grid">{fields.filter((field) => !field.advanced).map(renderField)}</div>
+              {spec.partOptions && <VisitPartsFields lang={lang} options={spec.partOptions} legend={spec.partsLabel} parts={(values.parts ?? []) as VisitPartInput[]}
+                onChange={(parts) => update("parts", parts)}/>}
+              {advanced.length > 0 && <details className="log-optional" ref={formDetails}>
+                <summary>{t("More details")}<ChevronDown size={16}/></summary>
+                <div className="form-grid">{advanced.map(renderField)}</div>
+              </details>}
+              {spec.photos && <fieldset className="log-job-photos">
+                <legend>{t(spec.photos.label)}</legend>
+                {spec.photos.limit > 0 ? <WorkshopPhotoPicker lang={lang} limit={spec.photos.limit} selection={photoFiles} disabled={busy || uncertain}
+                  onLimit={() => setError("photoLimit")} onChange={(files) => {
+                    preparedPhotos.current = null;
+                    setPhotoFiles(files);
+                    setError("");
+                  }}/> : <span className="workshop-photo-hint">{t("Photo limit reached")}</span>}
+              </fieldset>}
+            </div>}
           {error && <p className="error" role="alert">{message(lang, error)}</p>}
         </div>
         <footer className="dialog-foot">
-          <Button type="button" disabled={working || uncertain} onClick={() => dialog.current?.close()}>{t("Cancel")}</Button>
-          <Button type="submit" variant="primary" disabled={working}>{t(working ? "Saving…" : uncertain ? "Try again" : submission.submitLabel ?? "Save")}</Button>
+          {pendingUpload
+            ? <Button type="button" disabled={busy} onClick={() => goToSavedRecord(pendingUpload.href)}>{t("Continue")}</Button>
+            : <Button type="button" disabled={busy || uncertain} onClick={() => dialog.current?.close()}>{t("Cancel")}</Button>}
+          <Button type="submit" variant="primary" disabled={busy}>{t(working ?? (pendingUpload ? "Retry photo upload" : uncertain ? "Try again" : submission.submitLabel ?? "Save"))}</Button>
         </footer>
       </form>}
     </dialog>

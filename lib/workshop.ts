@@ -8,7 +8,7 @@ import { workshopIntake, intakeStatuses } from "./visit-items";
 import { jobEndDate } from "./visits";
 import type { Actor, Change } from "./transaction";
 
-export const jobStates=["new","inspecting","awaitingApproval","approved","inProgress","waitingParts","ready","delivered","cancelled"] as const;
+export const jobStates=["new","inspecting","awaitingApproval","approved","inProgress","delivered","cancelled"] as const;
 export const closedJobStatuses = ["delivered", "cancelled"];
 export const openJobStatuses = jobStates.filter((status) => !closedJobStatuses.includes(status));
 export const appointmentStates=["scheduled","arrived","completed","cancelled","noShow"] as const;
@@ -82,20 +82,15 @@ export async function jobUpdate(tx:Tx,input:Input,actor:Actor):Promise<Change> {
   const status=choice(input.status,jobStates);
   requireRule(before.status!=="delivered" || status==="delivered","invalidStatus");
   const intake=workshopIntake(before.metadata);
-  let dateChanges: { finishedAt?: string; deliveryDate?: string } = {};
+  let dateChanges: { deliveryDate?: string } = {};
   if (intake) {
-    if (status==="ready") {
-      requireRule(intake.jobMode==="stay","invalidStatus");
-      dateChanges={finishedAt:jobEndDate(input.finishedAt, before.at, "invalidFinishDate")};
-    } else if (status==="delivered") {
-      if (input.deliveryDate !== undefined) {
+    if (status==="delivered") {
+      if (before.status!=="delivered" || input.deliveryDate !== undefined) {
         requireRule(intake.jobMode==="stay","invalidStatus");
         dateChanges={deliveryDate:jobEndDate(input.deliveryDate, before.at)};
-      } else {
-        requireRule(before.status==="ready" || before.status==="delivered","invalidStatus");
       }
     } else if (status!=="cancelled") {
-      requireRule(!intake.finishedAt && intakeStatuses.some((value)=>value===status),"invalidStatus");
+      requireRule(intakeStatuses.some((value)=>value===status),"invalidStatus");
     }
   }
   if (status==="cancelled") {

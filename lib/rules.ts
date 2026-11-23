@@ -1,7 +1,9 @@
 import { Prisma } from "@prisma/client";
-import { normalize, parseMoney } from "./decimal-input";
+import { divideHalfUp, normalize, parseMoney } from "./decimal-input";
 
 export { normalize } from "./decimal-input";
+
+export const moneyAccountKinds = ["cash", "bank", "vodafoneCash", "instaPay"] as const;
 
 export class RuleError extends Error {
   constructor(public code: string, public status = 422) { super(code); }
@@ -33,8 +35,17 @@ export function units(input: unknown, signed = false) {
   requireRule(signed || amount.gt(0));
   return amount;
 }
+function quantityRatio(quantity: Prisma.Decimal) {
+  const [whole, fraction = ""] = quantity.toFixed().split(".");
+  return { numerator: BigInt(whole + fraction), denominator: 10n ** BigInt(fraction.length) };
+}
 export function extended(quantity: Prisma.Decimal, amount: bigint) {
-  return BigInt(quantity.mul(String(amount)).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP).toFixed());
+  const { numerator, denominator } = quantityRatio(quantity);
+  return divideHalfUp(amount * numerator, denominator);
+}
+export function unitAmount(total: bigint, quantity: Prisma.Decimal) {
+  const { numerator, denominator } = quantityRatio(quantity);
+  return divideHalfUp(total * denominator, numerator);
 }
 export function integer(input: unknown, min: number, max: number) {
   const value = normalize(input);

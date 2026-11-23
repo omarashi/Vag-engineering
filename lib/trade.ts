@@ -1,12 +1,14 @@
+import { randomUUID } from "node:crypto";
 import { Prisma, type Document, type DocumentKind } from "@prisma/client";
 import type { Tx } from "./db";
 import { json } from "./db";
 import { document, documentDates, lines, snapshot, validParty, validVehicle, type LineData } from "./documents";
-import { amountDue, cents, date, extended, needed, requireRule, text, units, list } from "./rules";
+import { amountDue, cents, choice, date, extended, needed, requireRule, text, unitAmount, units, list } from "./rules";
 import { move } from "./stock";
-import type { Input } from "./masters";
-import type { Actor, Change } from "./transaction";
+import { part, party, type Input } from "./masters";
+import { audit, type Actor, type Change } from "./transaction";
 import { workshopIntake } from "./visit-items";
+import { createSupplierPart, findSupplierQuote, linkedSupplierPart, supplierPriceList } from "./supplier-price-list";
 
 const zero = new Prisma.Decimal(0);
 export async function allocated(tx:Tx, documentId:string) {
@@ -45,6 +47,42 @@ export async function purchaseOrder(tx:Tx,input:Input,actor:Actor):Promise<Chang
     snapshot:await snapshot(tx,partyId)},await lines(tx,input.lines,{onlyParts:true}));
   return {id:after.id,entity:"document",after};
 }
+
+async function purchaseLines(tx: Tx, input: unknown, actor: Actor) {
+  const entries = list(input ?? []);
+  const priceList = entries.some((row) => row.productSource === "quote") ? await supplierPriceList(tx) : null;
+  const resolved: Input[] = [];
+  for (const row of entries) {
+    const source = choice(row.productSource ?? "inventory", ["inventory", "manual", "quote"] as const);
+    requireRule(row.kind === "part");
+    if (source === "inventory") {
+      resolved.push(row);
+      continue;
+    }
+    if (source === "manual") {
+      requireRule(cents(row.sellingPrice) > 0n, "sellingPriceRequired");
+      const created = await part(tx, {
+        name: row.description, brand: row.brand, code: text(row.code, 50) || "PRT-" + randomUUID(),
+        price: row.sellingPrice, cost: row.price,
+      });
+      await audit(tx, actor.id, "part", "part", created.id, null, created.after);
+      resolved.push({ ...row, partId: created.id });
+      continue;
+    }
+    const { list, quote } = findSupplierQuote(priceList, row);
+    const existing = await linkedSupplierPart(tx, quote);
+    let partId = existing?.id;
+    if (!partId) {
+      requireRule(cents(row.sellingPrice) > 0n, "sellingPriceRequired");
+      const created = await createSupplierPart(tx, list, quote, row.sellingPrice);
+      await audit(tx, actor.id, "part", "part", created.id, null, created.after);
+      partId = created.id;
+    }
+    resolved.push({ ...row, description: quote.description, partId, price: row.price ?? quote.cost });
+  }
+  return lines(tx, resolved, { onlyParts: true });
+}
+
 export async function purchase(tx:Tx,input:Input,actor:Actor):Promise<Change>{
   const sourceId=text(input.sourceId,120) || undefined;
   const order=sourceId ? await tx.document.findFirst({where:{id:sourceId,kind:"purchaseOrder",status:"draft"},include:{lines:true}}) : null;
@@ -53,26 +91,41 @@ export async function purchase(tx:Tx,input:Input,actor:Actor):Promise<Change>{
   const reference=needed(input.reference,120);
   requireRule(!(await tx.document.findFirst({where:{partyId,kind:"purchase",status:"posted",reference:{equals:reference,mode:"insensitive"}}})),"duplicateReference",409);
   const rows=order && !input.lines ? order.lines.map(({kind,description,partId,quantity,price,discount,total,position,id})=>({
-    kind,description,partId,quantity,price,discount,total,position,sourceId:id})) : await lines(tx,input.lines,{onlyParts:true});
+    kind,description,partId,quantity,price,discount,total,position,sourceId:id})) :
+    order ? await lines(tx,input.lines,{onlyParts:true}) : await purchaseLines(tx,input.lines,actor);
   const dates=documentDates(input);
   const after=await document(tx,actor,"purchase",{...dates,status:"posted",partyId,sourceId,reference,note:text(input.note),
     snapshot:await snapshot(tx,partyId)},rows);
   for(const row of rows){
     requireRule(row.partId);
-    const unitCost=BigInt(new Prisma.Decimal(String(row.total)).div(row.quantity).toDecimalPlaces(0,Prisma.Decimal.ROUND_HALF_UP).toFixed());
+    const unitCost=unitAmount(row.total,row.quantity);
     await move(tx,actor,{partId:row.partId,kind:"purchase",quantity:row.quantity,unitCost,totalCost:row.total,documentId:after.id,at:after.at});
     await tx.part.update({where:{id:row.partId},data:{cost:unitCost}});
   }
   if(order) await tx.document.update({where:{id:order.id},data:{status:"received",version:{increment:1}}});
   return {id:after.id,entity:"document",after};
 }
+async function counterCustomer(tx: Tx, input: Input, actor: Actor) {
+  if (input.partyId || input.customerName === undefined) return validParty(tx, input.partyId, "customer");
+  const name = needed(input.customerName);
+  const matches = await tx.party.findMany({
+    where: { kind: "customer", archived: false, name: { equals: name, mode: "insensitive" } },
+    select: { id: true }, take: 2,
+  });
+  requireRule(matches.length <= 1, "chooseCounterCustomer");
+  if (matches[0]) return matches[0].id;
+  const created = await party(tx, "customer", { name });
+  await audit(tx, actor.id, "customer", "party", created.id, null, created.after);
+  return created.id;
+}
+
 export async function invoice(tx:Tx,input:Input,actor:Actor):Promise<Change>{
   const sourceId=text(input.jobId,120)||undefined;
   const job=sourceId ? await tx.document.findFirst({where:{id:sourceId,kind:"job",status:{not:"cancelled"}},include:{jobStock:true}}) : null;
   requireRule(!sourceId || job && !workshopIntake(job.metadata),"invalidJob");
   if(job) requireRule(!(await tx.document.findFirst({where:{sourceId,kind:"invoice",status:"posted"}})),"alreadyPosted",409);
-  const partyId=job?.partyId ?? await validParty(tx,input.partyId,"customer");
-  const vehicleId=job?.vehicleId ?? (input.vehicleId ? (await validVehicle(tx,input.vehicleId,partyId)).id : null);
+  const partyId=job ? job.partyId ?? await validParty(tx,input.partyId,"customer") : await counterCustomer(tx,input,actor);
+  const vehicleId=job?.vehicleId ?? (input.vehicleId && input.customerName === undefined ? (await validVehicle(tx,input.vehicleId,partyId)).id : null);
   const rows = await lines(tx,input.lines,{
     onlyParts:!job,issuedPartIds:job?.jobStock.filter((item)=>item.issued.gt(0)).map((item)=>item.partId),
   });

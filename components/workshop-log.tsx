@@ -1,7 +1,7 @@
 import Link from "./navigation-link";
 import Form from "next/form";
 import { getImageProps } from "next/image";
-import { ArrowRight, CalendarDays, CarFront, ClipboardList, Package, Phone, Search, UserPlus, Wrench } from "lucide-react";
+import { ArrowRight, CalendarDays, CarFront, ClipboardList, Phone, Search, ShoppingCart, UserPlus, Wrench } from "lucide-react";
 import { notFound } from "next/navigation";
 import type { Prisma, Role } from "@prisma/client";
 import { db } from "@/lib/db";
@@ -12,12 +12,15 @@ import { recordedDeliveryDate, type visitById, visitList } from "@/lib/visits";
 import { closedJobStatuses, openJobStatuses } from "@/lib/workshop";
 import { customerDebtList } from "@/lib/customer-debt";
 import { can } from "@/lib/permissions";
+import { today } from "@/lib/rules";
 import { carForm, customerChoices, customerDebtForm, customerForm, jobForm, jobProgressForm, receiptAccounts, receiverSuggestions, visitPartOptions } from "@/lib/visit-forms";
 import { jobModeLabel, visitParts, visitTitle, visitWork, workshopIntake } from "@/lib/visit-items";
+import { workshopPhotosOn } from "@/lib/workshop-photos";
+import { workshopPhotoLimit } from "@/lib/workshop-photo-limits";
 import { ActionForm } from "./action-form";
-import { Attachments } from "./attachments";
+import { WorkshopMedia } from "./workshop-media";
 import { CustomerDebt } from "./customer-debt";
-import { DocRegister, PrintLink } from "./register";
+import { CashAccountSetup, DocRegister, PrintLink } from "./register";
 import { VisitBilling } from "./visit-billing";
 import { VisitWorkList } from "./visit-work-list";
 import { Badge, ButtonLink, Empty, Panel } from "./ui";
@@ -146,25 +149,23 @@ function Details({ lang, items }: { lang: Language; items: [string, React.ReactN
   </dl>;
 }
 
-export async function Home({ lang }: { lang: Language }) {
+export async function Home({ lang, role }: { lang: Language; role: Role }) {
+  const mayViewDebts = can(role, "customerDebtPayment");
   const queueOptions = {
     take: 6, orderBy: [{ at: "asc" }, { number: "asc" }],
     include: { party: { select: { name: true } }, vehicle: { select: { make: true, model: true, color: true, plate: true } } },
   } satisfies Prisma.DocumentFindManyArgs;
-  const [counts, ready, other, balances] = await Promise.all([
+  const [counts, queue, balances] = await Promise.all([
     db.document.groupBy({ by: ["status"], where: { kind: "job", status: { in: openJobStatuses } }, _count: true }),
-    db.document.findMany({ ...queueOptions, where: { kind: "job", status: "ready" } }),
-    db.document.findMany({ ...queueOptions, where: { kind: "job", status: { in: openJobStatuses, not: "ready" } } }),
-    customerDebtList(db, "", 0, 5, "balance"),
+    db.document.findMany({ ...queueOptions, where: { kind: "job", status: { in: openJobStatuses } } }),
+    mayViewDebts ? customerDebtList(db, "", 0, 5, "balance") : [],
   ]);
-  const queue = [...ready, ...other].slice(0, queueOptions.take);
   const byStatus = new Map(counts.map((row) => [row.status, row._count]));
   const open = counts.reduce((sum, row) => sum + row._count, 0);
   const t = (key: string) => translate(lang, key);
   const stats = [
     [open, "Open jobs", "/jobs", ClipboardList, "person"],
     [byStatus.get("inProgress") ?? 0, "In progress", "/jobs?status=inProgress", CarFront, "car"],
-    [byStatus.get("waitingParts") ?? 0, "Waiting for parts", "/jobs?status=waitingParts", Package, "visit"],
   ] as const;
   const countFormat = new Intl.NumberFormat(lang === "ar" ? "ar-EG" : "en");
   const date = new Intl.DateTimeFormat(lang === "ar" ? "ar-EG" : "en-GB", {
@@ -193,6 +194,7 @@ export async function Home({ lang }: { lang: Language }) {
         </div>
         <div className="log-actions">
           <ButtonLink href="/jobs?new=job" primary><ClipboardList size={17}/>{t("New job")}</ButtonLink>
+          {can(role, "invoice") && <ButtonLink href="/counter-sale"><ShoppingCart size={17}/>{t("Counter sale")}</ButtonLink>}
           <ButtonLink href="/customers?new=customer"><UserPlus size={17}/>{t("Add customer")}</ButtonLink>
         </div>
       </div>
@@ -203,11 +205,11 @@ export async function Home({ lang }: { lang: Language }) {
         <div><strong>{countFormat.format(count)}</strong><span>{t(title)}</span></div><ArrowRight size={17} className="log-direction"/>
       </Link>)}
     </section>
-    <div className="log-columns">
+    <div className={mayViewDebts ? "log-columns" : "log-stack"}>
       <Panel title={t("Workshop queue")} link="/jobs" linkLabel={t("View all jobs")}>
         {queue.length ? <DocRegister lang={lang} docs={queue} mode="jobs"/> : <Empty lang={lang} text="No open jobs"/>}
       </Panel>
-      <Panel title={t("Outstanding customer balances")} link="/debts" linkLabel={t("View all")}>
+      {mayViewDebts && <Panel title={t("Outstanding customer balances")} link="/debts" linkLabel={t("View all")}>
         {balances.length ? <ul className="log-list">{balances.map((row) => <li key={row.id}>
           <Link className="log-list-link" href={"/customers/" + row.id + "#customer-balance"}>
             <span className="log-row-main">
@@ -217,7 +219,7 @@ export async function Home({ lang }: { lang: Language }) {
             <strong className="log-balance-value"><bdi>{money(lang, row.balance)}</bdi></strong>
           </Link>
         </li>)}</ul> : <Empty lang={lang} text="No customers owe money"/>}
-      </Panel>
+      </Panel>}
     </div>
   </>;
 }
@@ -246,7 +248,7 @@ export async function Debts({ lang, query, role, receipt }: Props & { role: Role
 
   return <>
     <Title lang={lang} title="Customer debts">
-      {needsAccount && <ButtonLink href="/cash?new=account">{t("Set up a cash account")}</ButtonLink>}
+      {needsAccount && <CashAccountSetup lang={lang} canManage={can(role,"account")}/>}
     </Title>
     {/^[a-z0-9_-]+$/i.test(receipt) && <p className="notice log-saved debt-payment-notice" role="status">
       {t("Payment recorded")} <Link href={"/payment/" + receipt}>{t("View receipt")}</Link>
@@ -277,11 +279,12 @@ export async function CustomerPage({ lang, query, id, role }: Props & { id: stri
     visitList({ partyId: id, take: 6 }),
   ]);
   if (!person) notFound();
+  const mayViewBilling = can(role, "payment");
   const specs = { customerId: id, customers: [], continueVisit: query.continueVisit };
   const t = (key: string) => translate(lang, key);
   return <><Link className="log-back" href="/customers">{t("Back to customers")}</Link>
     <Title lang={lang} title={person.name} literal>
-      <ButtonLink href={"/receipts?party=" + id}>{t("Receipts")}</ButtonLink>
+      {mayViewBilling && <ButtonLink href={"/receipts?party=" + id}>{t("Receipts")}</ButtonLink>}
       {!person.archived && <ActionForm lang={lang} spec={carForm(specs)} primary auto={query.action === "vehicle"}/>}
       <ActionForm lang={lang} spec={customerForm(person)}/>
     </Title>
@@ -290,7 +293,7 @@ export async function CustomerPage({ lang, query, id, role }: Props & { id: stri
         ["Mobile number", person.phone ? <a className="log-phone" href={"tel:" + person.phone.replace(/[^\d+٠-٩]/g, "")}><Phone size={15}/><bdi>{person.phone}</bdi></a> : null],
         ["Notes", person.note], ["Other contact", person.contact], ["Address", person.address], ["Status", person.archived ? t("Archived") : ""],
       ]}/>
-      <CustomerDebt lang={lang} partyId={id} role={role} archived={person.archived}/>
+      {mayViewBilling && <CustomerDebt lang={lang} partyId={id} role={role} archived={person.archived}/>}
       <Panel title={t("Customer’s cars")}><CarRows lang={lang} rows={person.vehicles}/></Panel>
       <Panel title={t("Recent jobs")} link={"/jobs?party=" + id} linkLabel={t("View all")}><VisitRows lang={lang} rows={visits} scope="customer"/></Panel>
     </div>
@@ -309,11 +312,12 @@ export async function CarList({ lang, query }: Props) {
 }
 
 export async function CarPage({ lang, query, id, role }: Props & { id: string; role: Role }) {
-  const [car, visits, partOptions, receivers] = await Promise.all([
+  const [car, visits, partOptions, receivers, photosEnabled] = await Promise.all([
     db.vehicle.findUnique({ where: { id }, include: { party: true } }),
     visitList({ vehicleId: id, page: query.page }),
     visitPartOptions(lang),
     receiverSuggestions(),
+    workshopPhotosOn(),
   ]);
   if (!car) notFound();
   const t = (key: string) => translate(lang, key);
@@ -322,7 +326,7 @@ export async function CarPage({ lang, query, id, role }: Props & { id: string; r
       <div><h1><bdi>{carName(car)}</bdi></h1>{car.plate && <span className="log-plate"><bdi>{car.plate}</bdi></span>}
         <div className="log-actions">
           {!car.archived && !car.party.archived && <ActionForm lang={lang} spec={jobForm(lang, {
-            customerId: car.partyId, carId: id, partOptions, receivers, mayTakePayment: can(role, "visitReceipt"),
+            customerId: car.partyId, carId: id, partOptions, receivers, mayTakePayment: can(role, "visitReceipt"), photosEnabled,
           })} primary auto={["job", "visit"].includes(query.action)}/>}
           <ActionForm lang={lang} spec={carForm({ row: car, customers: [] })}/>
         </div>
@@ -350,39 +354,41 @@ export async function ServiceJobPage({ lang, row, role, autoReceipt }: { lang: L
   const closed = closedJobStatuses.includes(row.status);
   const editable = row.status !== "cancelled";
   const mayTakePayment = can(role, "visitReceipt");
-  const [partOptions, receivers] = await Promise.all([
+  const [partOptions, receivers, photosEnabled] = await Promise.all([
     editable && !row.related.length ? visitPartOptions(lang) : undefined,
     intake && editable ? receiverSuggestions() : undefined,
+    workshopPhotosOn(),
   ]);
+  const photoSlots = photosEnabled ? Math.max(0, workshopPhotoLimit - row.attachments.filter(({ mime }) => mime.startsWith("image/")).length) : undefined;
   const canProgress = intake?.jobMode === "stay" && !closed;
   const deliveryDate = recordedDeliveryDate(row);
-  const finished = row.kind === "visit" || row.status === "delivered" || row.status === "ready" && Boolean(intake?.finishedAt);
+  const finished = row.kind === "visit" || row.status === "delivered";
   return <><Link className="log-back" href={closed ? "/jobs/history" : "/jobs"}>{t("Back to jobs")}</Link>
     <Title lang={lang} title={visitTitle(lang, row)} literal detail={row.number}>
-      {canProgress && <ActionForm lang={lang} spec={jobProgressForm(row, mayTakePayment)} primary/>}
+      {canProgress && <ActionForm lang={lang} spec={jobProgressForm(row, mayTakePayment, photoSlots)} primary/>}
       {editable && <ActionForm lang={lang} spec={jobForm(lang, { row, partOptions, receivers, mayTakePayment })} primary={!canProgress}/>}
-      {intake && <PrintLink lang={lang} type="record" id={id}/>}
+      {intake && mayTakePayment && <PrintLink lang={lang} type="record" id={id}/>}
     </Title>
     <div className="log-stack"><Details lang={lang} items={[
       ["Customer", row.party && <Link href={"/customers/" + row.party.id}><bdi>{row.party.name}</bdi></Link>],
       ["Car", row.vehicle && <Link href={"/vehicles/" + row.vehicle.id}><bdi>{[carName(row.vehicle), row.vehicle.plate].filter(Boolean).join(" · ")}</bdi></Link>],
       ["Job type", intake && t(jobModeLabel(intake.jobMode))],
-      ["Status", row.status === "new" ? t("Checked in") : row.status === "ready" ? t("Ready for pickup") : <Badge lang={lang} value={row.status}/>],
+      ["Status", row.status === "new" ? t("Checked in") : <Badge lang={lang} value={row.status}/>],
       ["Received by", intake?.receivedBy],
       ["Date received", day(lang, row.at)],
       ["Delivery date", deliveryDate ? day(lang, deliveryDate) : null],
-      ["Date finished", row.status === "ready" && intake?.finishedAt ? day(lang, intake.finishedAt) : null],
       ["Odometer (km)", metadata.mileage],
       ["Notes", row.note], ["Work notes", metadata.work], ["Inspection", metadata.inspection], ["Requested work", metadata.requested],
     ]}/>
-    {finished && editable && <VisitBilling lang={lang} id={id} role={role} work={work} parts={parts}
-      version={row.version} autoReceipt={autoReceipt}/>}
+    {mayTakePayment && (finished || row.related.length > 0) && editable && <VisitBilling lang={lang} id={id} role={role} work={work} parts={parts}
+      version={row.version} autoReceipt={autoReceipt} serviceDay={deliveryDate || today(row.at)}/>}
     {work.length > 0 && <Panel title={t(finished ? "Work done" : "Selected services")}><VisitWorkList lang={lang} work={work}/></Panel>}
-    {parts.length > 0 && <Panel title={t("Parts sold")}><ul className="visit-work-list">{parts.map((part) => <li key={part.partId}>
+    {parts.length > 0 && <Panel title={t("Parts used")}><ul className="visit-work-list">{parts.map((part) => <li key={part.partId}>
       <strong><bdi>{part.code + " · " + part.name}</bdi></strong>
-      <p><bdi>{part.quantity + " × " + money(lang, part.unitPrice)}</bdi></p>
+      <p><bdi>{mayTakePayment ? part.quantity + " × " + money(lang, part.unitPrice) : part.quantity}</bdi></p>
     </li>)}</ul></Panel>}
-    {(intake || row.attachments.length > 0) && <Attachments lang={lang} id={id} type="document" files={row.attachments} allow={row.status !== "cancelled" && (row.kind === "job" || role !== "technician")}/>}
+    <WorkshopMedia lang={lang} id={id} files={row.attachments} allowPhotos={editable} photosEnabled={photosEnabled}
+      allowAttachments={editable && (row.kind === "job" || role !== "technician")} showAttachments={Boolean(intake)}/>
     </div>
   </>;
 }

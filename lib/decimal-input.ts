@@ -13,3 +13,8 @@ export function parseMoney(input: unknown): bigint | null {
   const amount = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
   return sign ? -amount : amount;
 }
+
+export function divideHalfUp(numerator: bigint, denominator: bigint) {
+  const sign = numerator < 0n ? -1n : 1n;
+  return sign * ((sign * numerator + denominator / 2n) / denominator);
+}

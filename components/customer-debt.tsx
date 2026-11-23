@@ -6,7 +6,8 @@ import { day, label, money, translate, type Language } from "@/lib/locale";
 import { can } from "@/lib/permissions";
 import { customerDebtForm, receiptAccounts } from "@/lib/visit-forms";
 import { ActionForm } from "./action-form";
-import { ButtonLink, Panel } from "./ui";
+import { Panel } from "./ui";
+import { CashAccountSetup } from "./register";
 
 export async function CustomerDebt({ lang, partyId, role, archived }: {
   lang: Language; partyId: string; role: Role; archived: boolean;
@@ -20,7 +21,7 @@ export async function CustomerDebt({ lang, partyId, role, archived }: {
     <div className="customer-debt-summary">
       <div><span>{t("Outstanding balance")}</span><strong><bdi>{money(lang, balance)}</bdi></strong></div>
       {mayPay && (accounts.length ? <ActionForm lang={lang} primary spec={customerDebtForm(lang, partyId, balance, accounts)}/>
-        : <ButtonLink href="/cash?new=account">{t("Set up a cash account")}</ButtonLink>)}
+        : <CashAccountSetup lang={lang} canManage={can(role,"account")}/>)}
     </div>
     {debts.length > 0 && <ul className="log-list customer-debt-list" aria-label={t("Unpaid invoices and balances")}>
       {debts.map((row) => <li key={row.id}><Link className="log-list-link" href={"/record/" + row.id}>

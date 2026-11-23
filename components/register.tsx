@@ -2,6 +2,7 @@ import Link from "./navigation-link";
 import Form from "next/form";
 import { ArrowUpRight, ChevronLeft, ChevronRight, Download, Filter, Search } from "lucide-react";
 import type { ReactNode } from "react";
+import type { PaymentKind } from "@prisma/client";
 import { ActionForm, type ActionSpec, type Option } from "./backoffice-form";
 import { Badge, Empty, Panel, ButtonLink } from "./ui";
 import { day, label, money, translate, type Language } from "@/lib/locale";
@@ -21,9 +22,13 @@ export function Register({lang,head,rows}:{lang:Language;head:string[];rows:Cell
 export function Heading({lang,title,description,children}:{lang:Language;title:string;description?:string;children?:ReactNode}){
   return <header className="page-heading"><div><h1>{translate(lang,title)}</h1>{description&&<p>{description}</p>}</div>{children&&<div className="page-actions">{children}</div>}</header>;
 }
-export function Actions({lang,forms,specs,auto=""}:{lang:Language;forms:Forms;specs:(ActionSpec|false|null|undefined)[];auto?:string}){
+export function CashAccountSetup({lang,canManage,primary=false}:{lang:Language;canManage:boolean;primary?:boolean}){
+  return canManage ? <ButtonLink href="/settings?new=account" primary={primary}>{translate(lang,"Set up a cash account")}</ButtonLink>
+    : <p className="notice">{translate(lang,"Ask the owner to set up a cash account.")}</p>;
+}
+export function Actions({lang,forms,specs,auto="",primary=true}:{lang:Language;forms:Forms;specs:(ActionSpec|false|null|undefined)[];auto?:string;primary?:boolean}){
   const permitted=specs.filter((spec):spec is ActionSpec=>Boolean(spec&&forms.can(spec.action)));
-  return permitted.map((spec,index)=><ActionForm key={spec.action+"-"+spec.title} lang={lang} spec={spec} primary={index===0} auto={auto===spec.action}/>);
+  return permitted.map((spec,index)=><ActionForm key={spec.action+"-"+spec.title} lang={lang} spec={spec} primary={primary&&index===0} auto={auto===spec.action}/>);
 }
 export function Info({lang,title="Details",items}:{lang:Language;title?:string;items:[string,ReactNode][]}){
   const values=items.filter(([,value])=>value!==null&&value!==undefined&&value!=="");
@@ -33,7 +38,7 @@ export function Info({lang,title="Details",items}:{lang:Language;title?:string;i
 function dropdown(name:string,options:Option[],selected?:string){
   return <select name={name} aria-label={name} defaultValue={selected ?? ""}><option value="">—</option>{options.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select>;
 }
-export function Toolbar({lang,path,filters,dateRange=false,status,party,staff,category=false,workServices=false,report}:{lang:Language;path:string;filters:Filters;dateRange?:boolean;status?:string[];party?:Option[];staff?:Option[];category?:boolean;workServices?:boolean;report?:string}){
+export function Toolbar({lang,path,filters,dateRange=false,status,party,staff,category=false,workServices=false,report,paymentKinds}:{lang:Language;path:string;filters:Filters;dateRange?:boolean;status?:string[];party?:Option[];staff?:Option[];category?:boolean;workServices?:boolean;report?:string;paymentKinds?:PaymentKind[]}){
   const tr=(name:string)=>translate(lang,name);
   return <Form key={JSON.stringify(filters)} className="toolbar" action={path} prefetch={false}>
     {report&&<input type="hidden" name="report" value={report}/>}
@@ -41,6 +46,10 @@ export function Toolbar({lang,path,filters,dateRange=false,status,party,staff,ca
     {dateRange&&<><input aria-label={tr("From")} type="date" name="from" defaultValue={filters.from}/><input aria-label={tr("To")} type="date" name="to" defaultValue={filters.to}/></>}
     {status&&dropdown("status",status.map((value)=>({value,name:value==="archived"?tr("Archived"):value==="active"?tr("Open"):label(lang,value)})),filters.status)}
     {party&&dropdown("party",party,filters.party)}{staff&&dropdown("staff",staff,filters.staff)}
+    {paymentKinds&&<select name="paymentKind" aria-label={tr("Payment type")} defaultValue={filters.paymentKind ?? ""}>
+      <option value="">{tr("All payment types")}</option>
+      {paymentKinds.map((kind)=><option key={kind} value={kind}>{label(lang,kind)}</option>)}
+    </select>}
     {workServices&&<select name="service" aria-label={tr("Service")} defaultValue={filters.service}>
       <option value="">{tr("All services")}</option>
       {serviceTypes.map((service)=><option key={service} value={service}>{serviceName(lang,service)}</option>)}

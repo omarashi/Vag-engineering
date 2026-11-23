@@ -7,6 +7,8 @@ import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import { translate, type Language } from "@/lib/locale";
+import type { Role } from "@prisma/client";
+import { canViewPage } from "@/lib/permissions";
 
 const navigation = [
   ["overview", "Home", House],
@@ -40,11 +42,12 @@ export function Preferences({ lang, theme }: { lang: Language; theme: string }) 
 }
 
 export function Shell({ lang, theme, user, demo, children }: {
-  lang: Language; theme: string; user: { name: string }; demo: boolean; children: React.ReactNode;
+  lang: Language; theme: string; user: { name: string; role: Role }; demo: boolean; children: React.ReactNode;
 }) {
   const pathname = usePathname();
   const route = pathname.split("/")[1];
-  const active = navigation.some(([path]) => path === route) ? route : route === "search" ? "" : "more";
+  const visibleNavigation = navigation.filter(([path]) => canViewPage(user.role, path));
+  const active = visibleNavigation.some(([path]) => path === route) ? route : route === "search" ? "" : "more";
   const [profile, setProfile] = useState(false);
   const [logoutError, setLogoutError] = useState(false);
   const t = (key: string) => translate(lang, key);
@@ -56,7 +59,7 @@ export function Shell({ lang, theme, user, demo, children }: {
       window.location.assign("/login");
     } catch { setLogoutError(true); }
   }
-  const links = () => navigation.map(([route, title, Icon]) => <Link key={route} href={"/" + route}
+  const links = () => visibleNavigation.map(([route, title, Icon]) => <Link key={route} href={"/" + route}
     className={"log-nav-link" + (active === route ? " current" : "")} aria-current={active === route ? "page" : undefined}>
     <Icon size={19} strokeWidth={1.8}/><span>{t(title)}</span>
   </Link>);

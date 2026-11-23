@@ -4,16 +4,18 @@ import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "re
 import { useRouter } from "next/navigation";
 import { Plus, X } from "lucide-react";
 import { Button } from "./ui";
+import Link from "./navigation-link";
 import { label, message, translate, type Language } from "@/lib/locale";
-import { requestKey } from "@/lib/request-key";
+import { postFormAction, type PendingAction } from "@/lib/action-request";
+import { PurchaseLineFields, type PurchaseQuoteOption } from "./purchase-line";
 
 export type Option={value:string;name:string;related?:string;price?:string;cost?:string;version?:number};
-export type Field={key:string;label:string;type?:"text"|"textarea"|"select"|"multi"|"check"|"date"|"datetime-local"|"month"|"password"|"email";value?:string|boolean|string[];required?:boolean;options?:Option[];wide?:boolean;ltr?:boolean;depends?:string};
-export type ActionSpec={action:string;title:string;fields?:Field[];hidden?:Record<string,unknown>;post?:boolean;editor?:"lines"|"returns"|"allocations";options?:Option[];parts?:Option[];services?:Option[];onlyParts?:boolean;purchase?:boolean;destination?:string;initialLines?:Row[];initialAllocation?:Record<string,string>;dynamic?:Record<string,Field[]>};
+export type Field={key:string;label:string;type?:"text"|"textarea"|"select"|"multi"|"check"|"date"|"datetime-local"|"month"|"password"|"email";value?:string|boolean|string[];required?:boolean;options?:Option[];wide?:boolean;ltr?:boolean;depends?:string;inputMode?:"decimal";showWhen?:{key:string;value:string}};
+export type ActionSpec={action:string;title:string;fields?:Field[];hidden?:Record<string,unknown>;post?:boolean;editor?:"lines"|"returns"|"allocations";options?:Option[];parts?:Option[];services?:Option[];onlyParts?:boolean;purchase?:boolean;purchaseQuotes?:PurchaseQuoteOption[];destination?:string;initialLines?:Row[];initialAllocation?:Record<string,string>;dynamic?:Record<string,Field[]>};
 type Data=Record<string,unknown>;
 type Row=Record<string,string>;
 const makeLine=(onlyParts?:boolean):Row=>({kind:onlyParts?"part":"service",description:"",partId:"",quantity:"1",price:"",discount:"0"});
-export function ActionForm({lang,spec,primary=false,auto=false}:{lang:Language;spec:ActionSpec;primary?:boolean;auto?:boolean}){
+export function ActionForm({lang,spec,primary=false,auto=false,source}:{lang:Language;spec:ActionSpec;primary?:boolean;auto?:boolean;source?:{href:string;label:string}}){
   const dialog=useRef<HTMLDialogElement>(null);
   const router=useRouter();
   const tr=(name:string)=>translate(lang,name);
@@ -23,8 +25,9 @@ export function ActionForm({lang,spec,primary=false,auto=false}:{lang:Language;s
   const [error,setError]=useState("");
   const [notice,setNotice]=useState("");
   const [working,setWorking]=useState(false);
-  const [showForm,setShowForm]=useState(false);
-  const request=useRef<{key:string;body:string;uncertain:boolean}|null>(null);
+  const [step,setStep]=useState<"closed"|"source"|"form">("closed");
+  const showForm=step==="form";
+  const request=useRef<PendingAction|null>(null);
   const fields=[...(spec.fields ?? []),...(spec.dynamic?.[String(state.kind)] ?? [])];
   const initial=()=>Object.fromEntries([...(spec.fields ?? []),...(spec.dynamic?.[String(spec.fields?.find((field)=>field.key==="kind")?.value ?? "")] ?? [])]
     .map((field)=>[field.key,field.value ?? (field.type==="check"?false:field.type==="multi"?[]:"")]));
@@ -32,9 +35,13 @@ export function ActionForm({lang,spec,primary=false,auto=false}:{lang:Language;s
     setState({...spec.hidden,...initial()});
     setRows(spec.editor==="lines" ? (spec.initialLines?.length ? spec.initialLines : [makeLine(spec.onlyParts)])
       : spec.initialAllocation ? [spec.initialAllocation] : []);
-    setConfirmed(false);setError("");setShowForm(true);
+    setConfirmed(false);setError("");setStep("form");
   }
-  useLayoutEffect(()=>{if(showForm&&!dialog.current?.open)dialog.current?.showModal();},[showForm]);
+  useLayoutEffect(()=>{
+    if(step==="closed")return;
+    if(!dialog.current?.open)dialog.current?.showModal();
+    if(step==="form" && source)dialog.current?.querySelector("input")?.focus();
+  },[step,source]);
   useEffect(()=>{if(auto&&!dialog.current?.open)open();/* Run once for the requested create action. */},[]); // eslint-disable-line react-hooks/exhaustive-deps
   function update(key:string,value:unknown){
     setState((previous)=>{
@@ -76,32 +83,16 @@ export function ActionForm({lang,spec,primary=false,auto=false}:{lang:Language;s
     const body=JSON.stringify(payload);
     setWorking(true);setError("");
     try {
-      let result:Response | undefined;
-      if(request.current?.uncertain) {
-        const lookup=await fetch("/api/requests/"+request.current.key,{cache:"no-store"});
-        if(lookup.ok){result=lookup;}
-        else if(lookup.status!==404)throw Error();
-        else if(request.current.body!==body){
-          setError("network");return;
-        }
-      }
-      if(!result){
-        if(!request.current || request.current.body!==body)request.current={key:requestKey(),body,uncertain:false};
-        result=await fetch("/api/actions/"+spec.action,{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":request.current.key},body});
-      }
-      const data=await result.json();
-      if(!result.ok){
-        if(result.status>=500){if(request.current)request.current.uncertain=true;}
-        else request.current=null;
+      const {ok,data}=await postFormAction(spec.action,body,request);
+      if(!ok){
         setError(data.error ?? "serverError");setConfirmed(false);return;
       }
-      request.current=null;dialog.current?.close();setNotice(data.warning?message(lang,data.warning):tr("Saved"));
+      dialog.current?.close();setNotice(data.warning?message(lang,data.warning):tr("Saved"));
       window.setTimeout(()=>setNotice(""),4200);
       if(spec.destination) router.push(spec.destination.replace("$id",data.id));
       else if(auto) router.replace(window.location.pathname);
       router.refresh();
     }catch{
-      if(request.current)request.current.uncertain=true;
       setError("network");setConfirmed(false);
     }finally{setWorking(false);}
   }
@@ -113,7 +104,7 @@ export function ActionForm({lang,spec,primary=false,auto=false}:{lang:Language;s
     if(field.type==="check")return <input type="checkbox" name={field.key} checked={value===true} onChange={(event)=>update(field.key,event.target.checked)}/>;
     if(field.type==="select")return <select {...shared} value={String(value ?? "")} onChange={(event)=>update(field.key,event.target.value)}><option value="">{tr("Select…")}</option>{options.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select>;
     if(field.type==="multi")return <select {...shared} multiple value={Array.isArray(value)?value:[]} onChange={(event)=>update(field.key,[...event.target.selectedOptions].map((option)=>option.value))}>{options.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select>;
-    return <input {...shared} type={field.type ?? "text"} value={String(value ?? "")} autoComplete={field.type==="password"?"new-password":undefined} onChange={(event)=>update(field.key,event.target.value)}/>;
+    return <input {...shared} type={field.type ?? "text"} inputMode={field.inputMode} value={String(value ?? "")} autoComplete={field.type==="password"?"new-password":undefined} onChange={(event)=>update(field.key,event.target.value)}/>;
   }
   const paymentTargets:Record<string,string[]>={receipt:["invoice","customerOpening"],supplierPayment:["purchase","supplierOpening"],refund:["credit"],supplierRefund:["supplierCredit"],expensePayment:["expense"],salaryPayment:["payroll","employeeOpening"],advance:["payroll","employeeOpening"]};
   const editableAllocation=spec.editor==="allocations" && !spec.initialAllocation && (spec.action!=="payment" || Boolean(paymentTargets[String(state.kind)]));
@@ -121,11 +112,19 @@ export function ActionForm({lang,spec,primary=false,auto=false}:{lang:Language;s
     (!state.partyId || option.related?.split("|")[0]===state.partyId) &&
     (!state.employeeId || option.related?.split("|")[1]===state.employeeId) &&
     paymentTargets[String(state.kind)]?.includes(option.related?.split("|")[2] ?? "")) : [];
+  const heading=<header className="dialog-head"><h2>{tr(spec.title)}</h2><button className="icon-button" type="button" disabled={working || Boolean(request.current?.uncertain)} aria-label={tr("Close")} onClick={()=>dialog.current?.close()}><X size={20}/></button></header>;
   return <>
-    <Button type="button" variant={primary?"primary":"secondary"} onClick={open}>{primary&&<Plus size={15}/>} {tr(spec.title)}</Button>
+    <Button type="button" variant={primary?"primary":"secondary"} onClick={source?()=>setStep("source"):open}>{primary&&<Plus size={15}/>} {tr(spec.title)}</Button>
     <dialog className="dialog" ref={dialog} aria-label={tr(spec.title)}
-      onClose={()=>{if(!dialog.current?.open)setShowForm(false);}}
+      onClose={()=>{if(!dialog.current?.open)setStep("closed");}}
       onCancel={(event)=>{if(working || request.current?.uncertain)event.preventDefault();}}>
+      {step==="source"&&source&&<>
+        {heading}
+        <div className="dialog-body"><div className="form-grid">
+          <Button asChild variant="primary"><Link href={source.href} onClick={()=>dialog.current?.close()}>{tr(source.label)}</Link></Button>
+          <Button type="button" onClick={open}>{tr("Add manually")}</Button>
+        </div></div>
+      </>}
       {showForm&&<form onSubmit={submit} onInvalid={(event)=>{
         const field=event.target;
         if(field instanceof HTMLInputElement||field instanceof HTMLTextAreaElement||field instanceof HTMLSelectElement){
@@ -135,19 +134,20 @@ export function ActionForm({lang,spec,primary=false,auto=false}:{lang:Language;s
         const field=event.target;
         if(field instanceof HTMLInputElement||field instanceof HTMLTextAreaElement||field instanceof HTMLSelectElement)field.setCustomValidity("");
       }}>
-        <header className="dialog-head"><h2>{tr(spec.title)}</h2><button className="icon-button" type="button" disabled={working || Boolean(request.current?.uncertain)} aria-label={tr("Close")} onClick={()=>dialog.current?.close()}><X size={20}/></button></header>
+        {heading}
         <div className="dialog-body">
-          <div className="form-grid">{fields.map((field)=><label key={field.key} className={"field "+(field.wide?"wide ":"")+(field.type==="check"?"check":"")}><span>{tr(field.label)}{field.required&&<em aria-hidden="true">*</em>}</span>{control(field)}</label>)}</div>
+          <div className="form-grid">{fields.filter(({showWhen})=>!showWhen||state[showWhen.key]===showWhen.value).map((field)=><label key={field.key} className={"field "+(field.wide?"wide ":"")+(field.type==="check"?"check":"")}><span>{tr(field.label)}{field.required&&<em aria-hidden="true">*</em>}</span>{control(field)}</label>)}</div>
           {(spec.editor==="lines"||spec.editor==="returns"||editableAllocation)&&<div className="line-editor">
             <div className="line-head"><b>{tr(editableAllocation?"Allocations":"Line items")}</b><Button type="button" onClick={()=>setRows((items)=>[...items,spec.editor==="lines"?makeLine(spec.onlyParts):spec.editor==="returns"?{sourceId:"",quantity:"1",disposition:"none"}:{documentId:"",amount:""}])}><Plus size={14}/>{tr(editableAllocation?"Add allocation":"Add line")}</Button></div>
             {rows.map((row,index)=><div className="line-row" key={index}>
-              {spec.editor==="lines"&&<>
+              {spec.editor==="lines"&&(spec.purchaseQuotes ? <PurchaseLineFields lang={lang} row={row} parts={spec.parts ?? []} quotes={spec.purchaseQuotes}
+                onChange={(next)=>setRows((items)=>items.map((item,position)=>position===index?next:item))}/> : <>
                 {!spec.onlyParts&&<label className="field">{tr("Type")}<select value={row.kind} onChange={(event)=>changeRow(index,"kind",event.target.value)}>{["service","labor","part","supplied"].map((key)=><option key={key} value={key}>{label(lang,key)}</option>)}</select></label>}
                 {row.kind==="part"&&<label className="field">{tr("Part")}<select required value={row.partId} onChange={(event)=>changeRow(index,"partId",event.target.value)}><option value="">{tr("Select…")}</option>{spec.parts?.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select></label>}
                 {row.kind==="service"&&!!spec.services?.length&&<label className="field">{tr("Service catalogue")}<select value={row.serviceId ?? ""} onChange={(event)=>changeRow(index,"serviceId",event.target.value)}><option value="">{tr("Select…")}</option>{spec.services.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select></label>}
                 <label className="field">{tr("Description")}<input required value={row.description} onChange={(event)=>changeRow(index,"description",event.target.value)}/></label>
                 {(["quantity","price","discount"] as const).map((field)=><label className="field" key={field}>{tr(field[0].toUpperCase()+field.slice(1))}<input dir="ltr" inputMode="decimal" required={field!=="discount"} value={row[field]} onChange={(event)=>changeRow(index,field,event.target.value)}/></label>)}
-              </>}
+              </>)}
               {spec.editor==="returns"&&<>
                 <label className="field">{tr("Description")}<select required value={row.sourceId} onChange={(event)=>changeRow(index,"sourceId",event.target.value)}><option value="">{tr("Select…")}</option>{spec.options?.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select></label>
                 <label className="field">{tr("Quantity")}<input inputMode="decimal" dir="ltr" required value={row.quantity} onChange={(event)=>changeRow(index,"quantity",event.target.value)}/></label>

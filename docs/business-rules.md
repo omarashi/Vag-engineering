@@ -22,8 +22,8 @@ Payroll uses separate employee and login records. Fixed, approved daily earnings
 | OD-02 | Docker on a single branch server or managed Linux host. Choose hosting, budget, operator and ownership before production. |
 | OD-03 | English or Arabic chosen on each A4 preview. Cairo dates with configurable business date style for printing. |
 | OD-04 | Supplied blue logo artwork, red references, Cupra rear and workshop photography. Production contact details remain blank until verified. |
-| OD-05 | All roles read business records. Technicians edit workshop/customer/vehicle operations. Accountants post, reverse, export, manage catalogue and enter deductions. Owner manages users and business settings. Confirm at acceptance. |
-| OD-06 | Suggested work statuses, versioned quote approval, issue before job invoice, named customers for counter sales. Anonymous sales require policy review. |
+| OD-05 | Technicians manage workshop jobs, customers and vehicles. Accountants manage sales, payments, cash, expenses and payroll. Only the owner can manage users, the service catalogue, business settings and employee dismissals. |
+| OD-06 | Check in a car as a quick job or an extended stay. Finish the work before billing, and use a customer name for counter sales. |
 | OD-07 | Manually entered daily earnings and commission, single recovery of advances, no negative payroll payable. Detailed payable-day and negative-balance policy remains open. |
 | OD-08 | Integer piastres, half-up line rounding, operational financial reporting. Confirm period and accounting treatment before live posting. |
 | OD-09 | Three-decimal quantities, no negative stock, receipt or maintained cost snapshots. Damaged returns can be recorded with no stock effect. Final costing and selling price authorization remain open. |

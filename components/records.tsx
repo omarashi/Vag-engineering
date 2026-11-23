@@ -1,22 +1,28 @@
 import { notFound, redirect } from "next/navigation";
+import { ChevronDown } from "lucide-react";
 import { db, plain } from "@/lib/db";
 import { carName } from "@/lib/car-name";
 import { documentDetail, documents, parts, payments } from "@/lib/views";
 import { ActionForm } from "./backoffice-form";
-import { Actions, Amt, DocRegister, Heading, Info, PayRegister, PrintLink, Ref, Register } from "./register";
+import { Actions, Amt, CashAccountSetup, DocRegister, Heading, Info, PayRegister, PrintLink, Ref, Register } from "./register";
 import { Badge, ButtonLink, Panel } from "./ui";
 import { Attachments } from "./attachments";
+import { WorkshopMedia } from "./workshop-media";
 import { VisitServiceDescription, VisitWorkList } from "./visit-work-list";
 import { isItemizedVisitInvoice, visitWork, workshopIntake } from "@/lib/visit-items";
 import { receiptDetails } from "@/lib/receipt-details";
 import { ReceiptItems } from "./receipt-items";
 import { clock, day, label, translate } from "@/lib/locale";
+import { invoiceReceiptForm, receiptAccounts } from "@/lib/visit-forms";
+import { ActionForm as ReceiptForm } from "./action-form";
 import type { ModuleProps } from "./modules";
+import { isWorkshopRecord } from "@/lib/permissions";
 
 type Props=ModuleProps&{id:string};
 export async function RecordView({lang,forms,id}:Props){
   const row=await documentDetail(id);
-  if(!row || row.kind==="appointment")notFound();
+  const finance=forms.can("payment");
+  if(!row || row.kind==="appointment" || (!finance&&!isWorkshopRecord(row.kind)))notFound();
   if(row.kind==="visit" || row.kind==="job" && workshopIntake(row.metadata))redirect("/jobs/"+id);
   const tr=(key:string)=>translate(lang,key);
   const meta=row.metadata as Record<string,unknown>;
@@ -31,20 +37,28 @@ export async function RecordView({lang,forms,id}:Props){
   const creditable=["invoice","purchase","customerOpening","supplierOpening"].includes(row.kind);
   const reversible=creditable||["credit","supplierCredit","expense","employeeOpening","advanceOpening"].includes(row.kind);
   const due=BigInt(row.due ?? 0);
+  const receiptTargets=row.kind==="invoice"&&posted&&due>0n&&forms.can("payment") ? await receiptAccounts() : null;
   const canEditAttachments=work?forms.can("job"):forms.can("expense");
-  const links=row.related.map((item)=>[<Ref href={"/record/"+item.id}>{item.number}</Ref>,label(lang,item.kind),<Badge lang={lang} value={item.status}/>]);
-  const invoice=row.related.some((item)=>item.kind==="invoice"&&item.status==="posted");
+  const links=row.related.filter((item)=>finance||isWorkshopRecord(item.kind)).map((item)=>[
+    <Ref href={"/record/"+item.id}>{item.number}</Ref>,label(lang,item.kind),<Badge lang={lang} value={item.status}/>]);
+  const invoice=row.related.find((item)=>item.kind==="invoice"&&item.status==="posted");
   const staffText=row.assignments.map((item)=>item.employee.name+(item.completed?" ✓":"")).join(", ");
-  const payStatus=BigInt(row.total)===0n||due===0n?"paid":due<BigInt(row.total)?"partial":"unpaid";
+  const creditsIssued=BigInt(row.settlement?.credited ?? 0);
+  const partiallyPaid=due<BigInt(row.total);
+  const payStatus=due===0n ? creditsIssued>0n?"settled":"paid" : partiallyPaid?"partial":"unpaid";
   return <><Heading lang={lang} title={row.number} description={label(lang,row.kind)+(row.title?" · "+row.title:"")}>
-    <Badge lang={lang} value={row.status}/><PrintLink lang={lang} type="record" id={id}/>
-    <Actions lang={lang} forms={forms} specs={[
+    <Badge lang={lang} value={row.status}/>{finance&&<PrintLink lang={lang} type="record" id={id}/>}
+    {receiptTargets && (receiptTargets.length
+      ? <ReceiptForm lang={lang} spec={invoiceReceiptForm(lang,row,due,receiptTargets)} primary/>
+      : <CashAccountSetup lang={lang} canManage={forms.can("account")} primary/>)}
+    {finance&&work&&invoice&&<ButtonLink href={"/record/"+invoice.id}>{tr("View invoice")}</ButtonLink>}
+    <Actions lang={lang} forms={forms} primary={!receiptTargets} specs={[
       work&&row.status!=="cancelled"&&forms.jobUpdate(row),work&&row.status!=="cancelled"&&forms.assign(row),
       work&&!["delivered","cancelled"].includes(row.status)&&!invoice&&forms.jobStock(row),
       work&&row.status!=="cancelled"&&!invoice&&forms.invoice(row),
-      work&&row.status!=="cancelled"&&forms.payment(undefined,row),
+      work&&row.status!=="cancelled"&&!invoice&&forms.payment(undefined,row),
       row.kind==="purchaseOrder"&&row.status==="draft"&&forms.purchase("purchase",row),
-      payable&&posted&&due>0n&&forms.payment(row),
+      payable&&row.kind!=="invoice"&&posted&&due>0n&&forms.payment(row),
       creditable&&posted&&forms.credit(row),
       reversible&&posted&&forms.reverse(row),
       row.kind==="payroll"&&forms.payEntry(row),
@@ -52,15 +66,19 @@ export async function RecordView({lang,forms,id}:Props){
     ]}/>
   </Heading><div className="detail-stack">
     <Info lang={lang} items={[
-      ["Date",day(lang,row.at)],["Due date",row.dueAt?day(lang,row.dueAt):null],
+      ["Date",day(lang,row.at)],["Due date",finance&&row.dueAt?day(lang,row.dueAt):null],
       ["Customer",row.party&&row.party.kind==="customer"?<Ref href={"/customers/"+row.party.id}>{snap.party?.name ?? row.party.name}</Ref>:null],
-      ["Supplier",row.party&&row.party.kind==="supplier"?<Ref href={"/purchasing/"+row.party.id}>{snap.party?.name ?? row.party.name}</Ref>:null],
+      ["Supplier",finance&&row.party?.kind==="supplier"?<Ref href={"/purchasing/"+row.party.id}>{snap.party?.name ?? row.party.name}</Ref>:null],
       ["Vehicle",row.vehicle&&car?<Ref href={"/vehicles/"+row.vehicle.id}>{[carName(car),car.plate].filter(Boolean).join(" · ")}</Ref>:null],
-      ["Employee",row.employee?<Ref href={"/payroll/"+row.employee.id}>{snap.employee?.name ?? row.employee.name}</Ref>:null],
-      ["Technicians",staffText],["Reference",row.reference],["Related documents",row.source?<Ref href={sourcePath+row.source.id}>{row.source.number}</Ref>:null],
+      ["Employee",finance&&row.employee?<Ref href={"/payroll/"+row.employee.id}>{snap.employee?.name ?? row.employee.name}</Ref>:null],
+      ["Technicians",staffText],["Reference",row.reference],
+      ["Related documents",row.source&&(finance||isWorkshopRecord(row.source.kind))?<Ref href={sourcePath+row.source.id}>{row.source.number}</Ref>:null],
       ["Category",row.category],["Notes",row.note],
-      ["Total",work?null:<Amt lang={lang} value={row.total}/>],["Amount due",row.due!=null?<Amt lang={lang} value={row.due}/>:null],
-      ["Payments",payable&&posted&&!["credit","supplierCredit"].includes(row.kind)?<Badge lang={lang} value={payStatus}/>:null],
+      [row.kind==="invoice"?"Invoice total":"Total",finance&&!work?<Amt lang={lang} value={row.total}/>:null],
+      ["Payments received",finance&&row.settlement?<Amt lang={lang} value={row.settlement.received}/>:null],
+      ["Credits issued",finance&&creditsIssued>0n?<Amt lang={lang} value={creditsIssued}/>:null],
+      ["Amount due",finance&&row.due!=null?<Amt lang={lang} value={row.due}/>:null],
+      ["Payments",finance&&payable&&posted&&!["credit","supplierCredit"].includes(row.kind)?<Badge lang={lang} value={payStatus}/>:null],
       ["Status",row.kind==="payroll"?tr(meta.locked?"Finalized":"Open"):null],
     ]}/>
     {work&&<Info lang={lang} title="Work notes" items={[
@@ -69,27 +87,33 @@ export async function RecordView({lang,forms,id}:Props){
       ["Follow-up date",String(meta.followUp ?? "")],["Follow-up mileage",String(meta.followMileage ?? "")],
     ]}/>}
     {!itemizedVisit&&billedWork.length>0&&<Panel title={tr("Work done")}><VisitWorkList lang={lang} work={billedWork}/></Panel>}
-    {!!row.lines.length&&<Panel title={tr("Line items")}><Register lang={lang} head={["Type","Description","Quantity",itemizedVisit?"Unit price":"Price","Discount","Total","Cost"]} rows={row.lines.map((line)=>{
+    {!!row.lines.length&&<Panel title={tr("Line items")}><Register lang={lang} head={[
+      "Type","Description","Quantity",...(finance?[itemizedVisit?"Unit price":"Price","Discount","Total","Cost"]:[]),
+    ]} rows={row.lines.map((line)=>{
       const item=itemizedVisit&&line.kind==="service"?billedWork[line.position]:undefined;
       return [label(lang,line.kind),item?<VisitServiceDescription lang={lang} work={item}/>:<bdi>{line.description}</bdi>,String(line.quantity),
-        <Amt lang={lang} value={line.price}/>,<Amt lang={lang} value={line.discount}/>,<Amt lang={lang} value={line.total}/>,<Amt lang={lang} value={line.costTotal}/>];
+        ...(finance?[<Amt lang={lang} value={line.price}/>,<Amt lang={lang} value={line.discount}/>,<Amt lang={lang} value={line.total}/>,<Amt lang={lang} value={line.costTotal}/>]:[])];
     })}/></Panel>}
     {!!links.length&&<Panel title={tr("Related documents")}><Register lang={lang} head={["Number","Type","Status"]} rows={links}/></Panel>}
-    {!!row.jobStock.length&&<Panel title={tr("Stock")}><Register lang={lang} head={["Part","Reserved","Quantity","Cost"]} rows={row.jobStock.map((line)=>[
-      <Ref href={"/inventory/"+line.partId}>{line.part.name}</Ref>,String(line.reserved),String(line.issued),<Amt lang={lang} value={line.issuedCost}/>,
+    {!!row.jobStock.length&&<Panel title={tr("Stock")}><Register lang={lang} head={["Part","Reserved","Quantity",...(finance?["Cost"]:[])]} rows={row.jobStock.map((line)=>[
+      finance?<Ref href={"/inventory/"+line.partId}>{line.part.name}</Ref>:<bdi>{line.part.name}</bdi>,
+      String(line.reserved),String(line.issued),...(finance?[<Amt lang={lang} value={line.issuedCost}/>]:[]),
     ])}/></Panel>}
     {!!row.movements.length&&<Panel title={tr("Stock movements")}><Register lang={lang} head={["Date","Part","Type","Quantity","Reserved","Reason"]} rows={row.movements.map((line)=>[
-      day(lang,line.at),<Ref href={"/inventory/"+line.partId}>{line.part.name}</Ref>,label(lang,line.kind),String(line.quantity),String(line.reserve),<bdi>{line.reason}</bdi>,
+      day(lang,line.at),finance?<Ref href={"/inventory/"+line.partId}>{line.part.name}</Ref>:<bdi>{line.part.name}</bdi>,
+      label(lang,line.kind),String(line.quantity),String(line.reserve),<bdi>{line.reason}</bdi>,
     ])}/></Panel>}
-    {!!row.payroll.length&&<Panel title={tr("Pay entries")}><Register lang={lang} head={["Date","Type","Amount","Notes","Reference","Code"]} rows={row.payroll.map((item)=>[
+    {finance&&!!row.payroll.length&&<Panel title={tr("Pay entries")}><Register lang={lang} head={["Date","Type","Amount","Notes","Reference","Code"]} rows={row.payroll.map((item)=>[
       day(lang,item.at),label(lang,item.kind),<Amt lang={lang} value={item.amount}/>,<bdi>{item.note}</bdi>,<bdi>{item.reference}</bdi>,<bdi>{item.id}</bdi>,
     ])}/></Panel>}
-    {!!row.allocations.length&&<Panel title={tr("Allocations")}><Register lang={lang} head={["Number","Date","Type","Amount","Status","Action"]} rows={row.allocations.map((item)=>[
+    {finance&&!!row.allocations.length&&<Panel title={tr(row.kind==="invoice"?"Receipts":"Allocations")}><Register lang={lang} head={["Number","Date","Type","Amount","Status","Action"]} rows={row.allocations.map((item)=>[
       <Ref href={"/payment/"+item.paymentId}>{item.payment.number}</Ref>,day(lang,item.payment.at),label(lang,item.payment.kind),<Amt lang={lang} value={item.amount}/>,
       <Badge lang={lang} value={item.releasedAt||item.payment.reversedAt?"reversed":"posted"}/>,
       !item.releasedAt&&!item.payment.reversedAt&&forms.can("unallocate")&&["receipt","supplierPayment","advance"].includes(item.payment.kind)?<ActionForm lang={lang} spec={forms.unallocate(item.id)}/>:null,
     ])}/></Panel>}
-    <Attachments lang={lang} type="document" id={id} allow={canEditAttachments} files={row.attachments.map(({id,name})=>({id,name}))}/>
+    {work ? <WorkshopMedia lang={lang} id={id} files={row.attachments} allowPhotos={row.status !== "cancelled"}
+      allowAttachments={canEditAttachments} showAttachments/> :
+      <Attachments lang={lang} type="document" id={id} allow={canEditAttachments} files={row.attachments.map(({id,name})=>({id,name}))}/>}
   </div></>;
 }
 export async function PaymentView({lang,forms,id}:Props){
@@ -99,22 +123,25 @@ export async function PaymentView({lang,forms,id}:Props){
   const open=!row.reversedAt;
   const receipt=await receiptDetails(row);
   const unallocated=BigInt(row.amount)-row.allocations.filter((item)=>!item.releasedAt).reduce((sum,item)=>sum+BigInt(item.amount),0n);
+  const allocations=row.allocations.length>0&&<Register lang={lang} head={["Document","Amount","Status","Action"]} rows={row.allocations.map((item)=>[
+    <Ref href={"/record/"+item.documentId}>{item.document.number}</Ref>,<Amt lang={lang} value={item.amount}/>,<Badge lang={lang} value={item.releasedAt||!open?"reversed":"posted"}/>,
+    open&&!item.releasedAt&&forms.can("unallocate")&&["receipt","supplierPayment","advance"].includes(row.kind)?<ActionForm lang={lang} spec={forms.unallocate(item.id)}/>:null,
+  ])}/>;
   return <><Heading lang={lang} title={row.number} description={label(lang,row.kind)}><PrintLink lang={lang} type="payment" id={id} text={row.kind==="receipt"?"Print receipt":undefined}/>
     {row.kind==="receipt"&&row.partyId&&<ButtonLink href={"/customers/"+row.partyId+"#customer-balance"}>{tr("Customer balance")}</ButtonLink>}
     <Actions lang={lang} forms={forms} specs={[open&&unallocated>0n&&["receipt","supplierPayment","advance"].includes(row.kind)&&forms.allocate(row),open&&forms.reverse(row,true)]}/>
   </Heading><div className="detail-stack"><Info lang={lang} items={[
-    ["Date",day(lang,row.at)],["Name",row.party?.name ?? row.employee?.name],[row.kind==="receipt"?"Payment amount":"Amount",<Amt lang={lang} value={row.amount}/>],["Payment method",label(lang,row.method)],
+    ["Date",day(lang,row.at)],["Name",row.party?.name ?? row.employee?.name],["Amount",receipt?null:<Amt lang={lang} value={row.amount}/>],["Payment method",label(lang,row.method)],
     ["Status",<Badge lang={lang} value={open?"posted":"reversed"}/>],["Unapplied",["receipt","supplierPayment","advance"].includes(row.kind)&&open?<Amt lang={lang} value={unallocated}/>:null],
     ["Notes",row.note],["Reason",row.reverseReason],
   ]}/>
-  {receipt.bills.length>0&&<Panel title={tr("Receipt details")} className="receipt-details"><ReceiptItems lang={lang} details={receipt}/></Panel>}
+  {receipt&&<Panel title={tr("Receipt details")} className="receipt-details"><ReceiptItems lang={lang} details={receipt}/></Panel>}
   <Panel title={tr("Money movements")}><Register lang={lang} head={["Date","Account","Amount","Status"]} rows={row.movements.map((item)=>[
     day(lang,item.at),item.account.name,<Amt lang={lang} value={item.amount}/>,<Badge lang={lang} value={item.reversal?"reversed":"posted"}/>,
   ])}/></Panel>
-  <Panel title={tr("Allocations")}><Register lang={lang} head={["Document","Amount","Status","Action"]} rows={row.allocations.map((item)=>[
-    <Ref href={"/record/"+item.documentId}>{item.document.number}</Ref>,<Amt lang={lang} value={item.amount}/>,<Badge lang={lang} value={item.releasedAt||!open?"reversed":"posted"}/>,
-    open&&!item.releasedAt&&forms.can("unallocate")&&["receipt","supplierPayment","advance"].includes(row.kind)?<ActionForm lang={lang} spec={forms.unallocate(item.id)}/>:null,
-  ])}/></Panel></div></>;
+  {allocations&&(receipt?.bills.length ? <details className="log-optional">
+    <summary>{tr("Allocations")}<ChevronDown size={15} aria-hidden="true"/></summary>{allocations}
+  </details> : <Panel title={tr("Allocations")}>{allocations}</Panel>)}</div></>;
 }
 export async function PartyView({lang,forms,id,kind}:Props&{kind:"customer"|"supplier"}){
   const row=await db.party.findFirst({where:{id,kind},include:{vehicles:true}});

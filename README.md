@@ -1,6 +1,6 @@
 # VAG Engineering Workshop Log · v2.1
 
-A workshop register for customers, their cars, and the work they need. **Workshop** puts **Jobs** and **Visits** side by side. Use **New job** to check in a car and follow work over time, or **Log a visit** to record work, service details, and parts sold. **Open jobs** includes cars ready for pickup, and **Job history** lists delivered and cancelled jobs.
+A workshop register for customers, their cars, and the work they need. Use **Jobs → New job** to record a quick job or check in a car that will stay at the shop. **Open jobs** shows work in progress, **Job history** shows delivered and cancelled jobs, and **Jobs to bill** shows finished work awaiting billing.
 
 From a visit, select **Create invoice** and enter the price for each service. The form shows the quantities and saved unit prices of any parts added to the visit and adds everything up in EGP. The printable invoice shows the same itemized prices and the recorded service details.
 
@@ -34,5 +34,7 @@ The full ERP source and a verified database and attachments snapshot are in the 
 
 ## Verification
 
-Run `npm run check`, `npm test` and `npm run build`. To verify the customer-to-visit flow, run `npm run test:acceptance` with `TEST_URL` pointing to an isolated demo instance. For the Edge test, install Playwright Core with `npm install --prefix ./data/tooling --no-audit --no-fund playwright-core` and run `node tests/browser.mjs` with the same URL. Both flow tests create test records. For transactional receipt checks, run node --env-file=.env tests/receipts.mjs with TEST_URL and DATABASE_URL pointing to the isolated test instance and database.
+Run `npm run check`, `npm test` and `npm run build`. For workflow checks, set `TEST_URL` to an isolated demo instance and `DATABASE_URL` to its PostgreSQL database with a name ending in `_test`. Run `npm run test:acceptance` for workshop flows, `npm run test:roles` for access and handoff, or `node --env-file=.env tests/receipts.mjs` for transactional receipt checks. These suites create test records.
+
+Install Playwright Core with `npm install --prefix ./data/tooling --no-audit --no-fund playwright-core` for `node tests/browser.mjs` and `npm run test:photos`. Set `VAG_EDGE_PATH` to the Microsoft Edge executable if it is installed outside the default Windows location.
 

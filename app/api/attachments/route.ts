@@ -1,46 +1,89 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, open, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { currentUser } from "@/lib/auth";
-import { db } from "@/lib/db";
-import { audit } from "@/lib/transaction";
-import { attachmentLimit,attachmentRoot,signature } from "@/lib/storage";
+import { mutationUser } from "@/lib/auth";
+import { requireRule, RuleError } from "@/lib/rules";
+import { audit, lockedMutation, priorRequest, recordRequest, requireRequestKey } from "@/lib/transaction";
+import { attachmentLimit, attachmentRoot, signature } from "@/lib/storage";
+import { workshopPhotosOn } from "@/lib/workshop-photos";
+import { workshopPhotoLimit, workshopPhotoMaxBytes } from "@/lib/workshop-photo-limits";
+import { canAccessAttachment, isWorkshopRecord } from "@/lib/permissions";
 
-export async function POST(request:Request){
-  if(request.headers.get("origin")!==(process.env.BETTER_AUTH_URL ?? new URL(request.url).origin))return Response.json({error:"forbidden"},{status:403});
-  const actor=await currentUser(request.headers);
-  if(!actor)return Response.json({error:"unauthenticated"},{status:401});
-  const length=Number(request.headers.get("content-length") ?? "0");
-  if(length>attachmentLimit+65536)return Response.json({error:"invalidFile"},{status:413});
-  const content=await request.formData().catch(()=>null);
-  const file=content?.get("file");
-  const type=content?.get("type");
-  const id=content?.get("target");
-  if(typeof id!=="string"||id.length>100||!(file instanceof File)||file.size>attachmentLimit||file.size===0)return Response.json({error:"invalidFile"},{status:422});
-  const vehicle=type==="vehicle" ? await db.vehicle.findUnique({where:{id}}) : null;
-  const document=type==="document" ? await db.document.findUnique({where:{id,kind:{not:"quote"}}}) : null;
-  if(!vehicle&&!document)return Response.json({error:"invalidDocument"},{status:404});
-  if(actor.role==="technician"&&!vehicle&&(!document||!["job","appointment"].includes(document.kind)))return Response.json({error:"forbidden"},{status:403});
-  const body=Buffer.from(await file.arrayBuffer());
-  const mime=signature(body);
-  if(!mime||mime!==file.type)return Response.json({error:"invalidFile"},{status:422});
-  const key=randomUUID();const root=attachmentRoot();const path=join(root,key);
-  let written=false;
-  try{
-    await db.$transaction(async(tx)=>{
-      await tx.$queryRaw`SELECT 1 AS acquired FROM pg_advisory_xact_lock(7362371)`;
-      const live=await tx.user.findUnique({where:{id:actor.id}});
-      if(!live?.active || live.role==="technician"&&!vehicle&&(!document||!["job","appointment"].includes(document.kind)))throw Error("permission");
-      await mkdir(root,{recursive:true});
-      await writeFile(path,body,{flag:"wx",mode:0o600});written=true;
-      const name=file.name.replace(/[\u0000-\u001F\u007F/\\]/g,"_").slice(0,150);
-      const row=await tx.attachment.create({data:{documentId:document?.id,vehicleId:vehicle?.id,name,mime,size:file.size,key,actorId:actor.id}});
-      await audit(tx,actor.id,"attachment","attachment",row.id,null,{name,mime,id});
+export async function POST(request: Request) {
+  const requestId = request.headers.get("idempotency-key");
+  const written: string[] = [];
+  try {
+    const actor = await mutationUser(request);
+    const length = Number(request.headers.get("content-length") ?? "0");
+    const maxFiles = requestId ? workshopPhotoLimit : 1;
+    requireRule(length <= maxFiles * attachmentLimit + 65536, "invalidFile", 413);
+    if (requestId) requireRequestKey(requestId);
+    const content = await request.formData().catch(() => null);
+    const files = content?.getAll("file") ?? [];
+    const type = content?.get("type");
+    const id = content?.get("target");
+    requireRule(typeof id === "string" && id.length <= 100, "invalidFile");
+    requireRule(files.length > 0, "invalidFile");
+    requireRule(files.length <= maxFiles, "photoLimit");
+    requireRule(files.every((file): file is File => file instanceof File && file.size > 0 && file.size <= attachmentLimit), "invalidFile");
+    const uploads: { body: Buffer; mime: string; name: string }[] = [];
+    for (const file of files) {
+      const body = Buffer.from(await file.arrayBuffer());
+      const mime = signature(body);
+      requireRule(mime && mime === file.type, "invalidFile");
+      const name = file.name.replace(/[\u0000-\u001F\u007F/\\]/g, "_").slice(0, 150);
+      uploads.push({ body, mime, name });
+    }
+
+    const hash = requestId ? createHash("sha256").update(JSON.stringify({
+      action: "attachment", id, type,
+      files: uploads.map(({ body, mime, name }) => ({ mime, name, hash: createHash("sha256").update(body).digest("hex") })),
+    })).digest("hex") : "";
+
+    await lockedMutation(actor, async (tx, live) => {
+      const vehicle = type === "vehicle" ? await tx.vehicle.findUnique({ where: { id }, select: { id: true } }) : null;
+      const document = type === "document" ? await tx.document.findUnique({
+        where: { id, kind: { not: "quote" } }, select: { id: true, kind: true, status: true },
+      }) : null;
+      requireRule(vehicle || document, "invalidDocument", 404);
+      const photos = isWorkshopRecord(document?.kind) && uploads.every(({ mime }) => mime.startsWith("image/"));
+      requireRule(photos || uploads.length === 1, "invalidFile");
+      requireRule(canAccessAttachment(live.role, { vehicleId: vehicle?.id, documentKind: document?.kind }), "forbidden", 403);
+      if (requestId && await priorRequest(tx, live, requestId, hash)) return;
+      if (photos) {
+        requireRule(document?.status !== "cancelled", "forbidden", 403);
+        requireRule(await workshopPhotosOn(tx), "photosDisabled", 403);
+        requireRule(uploads.every(({ body }) => body.length <= workshopPhotoMaxBytes), "photoTooLarge", 413);
+        const count = await tx.attachment.count({ where: { documentId: id, mime: { startsWith: "image/" } } });
+        requireRule(count + uploads.length <= workshopPhotoLimit, "photoLimit", 409);
+      }
+
+      const root = attachmentRoot();
+      await mkdir(root, { recursive: true });
+      for (const { body, mime, name } of uploads) {
+        const key = randomUUID();
+        const path = join(root, key);
+        const handle = await open(path, "wx", 0o600);
+        written.push(path);
+        try {
+          await handle.writeFile(body);
+        } finally {
+          await handle.close();
+        }
+        const row = await tx.attachment.create({ data: {
+          documentId: document?.id, vehicleId: vehicle?.id, name, mime, size: body.length, key, actorId: actor.id,
+        } });
+        await audit(tx, actor.id, "attachment", "attachment", row.id, null, { name, mime, id });
+      }
+      if (requestId) {
+        const action = vehicle || isWorkshopRecord(document?.kind) ? "attachment:workshop" : "attachment:finance";
+        await recordRequest(tx, live, requestId, hash, action, { ok: true });
+      }
     });
-    return Response.json({ok:true},{status:201});
-  }catch(error){
-    if(written)await unlink(path).catch(()=>{});
-    return Response.json({error:error instanceof Error&&error.message==="permission"?"forbidden":"serverError"},{status:error instanceof Error&&error.message==="permission"?403:500});
+    return Response.json({ ok: true }, { status: 201 });
+  } catch (error) {
+    await Promise.all(written.map((path) => unlink(path).catch(() => {})));
+    if (error instanceof RuleError) return Response.json({ error: error.code }, { status: error.status });
+    return Response.json({ error: "serverError" }, { status: 500 });
   }
 }
-

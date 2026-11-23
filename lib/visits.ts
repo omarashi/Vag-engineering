@@ -18,14 +18,19 @@ async function saveVisitParts(tx: Tx, input: unknown, prior: VisitPart[], visitI
     const invoice = await tx.document.findFirst({ where: { kind: "invoice", sourceId: visitId, status: "posted" }, select: { id: true } });
     requireRule(!invoice, "visitPartsAlreadyInvoiced", 409);
   }
-  const newIds = chosen.filter((part) => !byId.has(part.partId)).map((part) => part.partId);
-  const catalog = await tx.part.findMany({ where: { id: { in: newIds }, archived: false }, select: { id: true, name: true, code: true, price: true } });
+  const changedIds = chosen.filter((part) => byId.get(part.partId)?.quantity !== part.quantity).map((part) => part.partId);
+  const catalog = await tx.part.findMany({
+    where: { id: { in: changedIds }, archived: false },
+    select: { id: true, name: true, code: true, price: true, onHand: true, reserved: true },
+  });
   const catalogById = new Map(catalog.map((part) => [part.id, part]));
   return chosen.map((part) => {
     const existing = byId.get(part.partId);
-    if (existing) return { ...existing, quantity: part.quantity };
+    if (existing?.quantity === part.quantity) return existing;
     const item = catalogById.get(part.partId);
     requireRule(item, "missingPart");
+    requireRule(item.onHand.minus(item.reserved).gte(part.quantity), "stockConflict", 409);
+    if (existing) return { ...existing, quantity: part.quantity };
     return { ...part, name: item.name, code: item.code, unitPrice: item.price.toString() };
   });
 }
@@ -38,9 +43,9 @@ export function saveWorkshopJob(tx: Tx, input: Input, actor: Actor) {
   return saveServiceRecord(tx, input, actor, "job");
 }
 
-export function jobEndDate(input: unknown, at: Date, error = "invalidDeliveryDate") {
+export function jobEndDate(input: unknown, at: Date) {
   const end = today(date(needed(input, 10)));
-  requireRule(end >= today(at) && end <= today(), error);
+  requireRule(end >= today(at) && end <= today(), "invalidDeliveryDate");
   return end;
 }
 
@@ -66,7 +71,7 @@ async function saveServiceRecord(tx: Tx, input: Input, actor: Actor, kind: "visi
     const jobMode = choice(input.jobMode, jobModes);
     const receivedBy = needed(input.receivedBy, 120);
     const previousStatus = before?.status;
-    const previouslyFinished = previousStatus === "ready" || previousStatus === "delivered";
+    const previouslyFinished = previousStatus === "delivered";
     if (previouslyFinished) requireRule(jobMode === priorIntake?.jobMode, "invalidStatus");
     let deliveryDate = "";
     if (jobMode === "quick") {
@@ -76,8 +81,7 @@ async function saveServiceRecord(tx: Tx, input: Input, actor: Actor, kind: "visi
       deliveryDate = jobEndDate(input.deliveryDate ?? recordedDeliveryDate(before), at);
     } else {
       requireRule(!input.deliveryDate && !input.finishedAt, "finishJobSeparately");
-      if (previousStatus === "ready") jobEndDate(priorIntake?.finishedAt, at, "invalidFinishDate");
-      else status = choice(input.status || previousStatus || "inProgress", intakeStatuses);
+      status = choice(input.status || previousStatus || "inProgress", intakeStatuses);
     }
     intake = { jobMode, receivedBy, ...(deliveryDate ? { deliveryDate } : {}) };
   }
@@ -131,7 +135,7 @@ export function visitById(id: string) {
     include: {
       ...related,
       related: { where: { kind: "invoice", status: "posted" }, select: { id: true }, take: 1 },
-      attachments: { select: { id: true, name: true } },
+      attachments: { orderBy: { at: "asc" }, select: { id: true, name: true, mime: true } },
     },
   });
 }

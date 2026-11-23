@@ -1,18 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { postAction, signIn } from "./support/http.mjs";
 
 const base = process.env.TEST_URL;
 if (!base) throw Error("Set TEST_URL to the isolated demo instance.");
-const headers = { Origin: base, "Content-Type": "application/json" };
-const actor = await fetch(base + "/api/auth/sign-in/email", {
-  method: "POST", headers, body: JSON.stringify({ email: "technician@vag-demo.test", password: "Demo-Workshop-2026!" }),
-});
-assert.equal(actor.status, 200);
-const cookie = actor.headers.getSetCookie().map((row) => row.split(";")[0]).join("; ");
+const cookie = await signIn(base, "technician@vag-demo.test");
 function action(name, data, key = randomUUID(), signed = true) {
-  return fetch(base + "/api/actions/" + name, {
-    method: "POST", headers: { ...headers, "Idempotency-Key": key, ...(signed ? { Cookie: cookie } : {}) }, body: JSON.stringify(data),
-  });
+  return postAction(base, signed ? cookie : "", name, data, key);
 }
 async function save(name, data, key) {
   const result = await action(name, data, key);
@@ -67,10 +61,14 @@ for (const path of ["/appointments", "/quotations"]) {
   assert.equal((await fetch(base + path, { headers: { Cookie: cookie } })).status, 404, path);
 }
 assert.equal((await action("appointment", {})).status, 404);
-for (const removed of ["quote", "quoteApprove"]) assert.equal((await action(removed, {})).status, 404, removed);
+for (const removed of ["quote", "quoteApprove", "cashCount"]) assert.equal((await action(removed, {})).status, 404, removed);
 const jobId = await save("job", { partyId, vehicleId, title: sample + " Check-in" });
-for (const path of ["/more", "/receipts", "/invoices", "/jobs", "/jobs/history", "/jobs/" + jobId, "/inventory", "/purchasing", "/cash", "/balances", "/payroll", "/reports", "/business", "/opening", "/audit", "/settings"]) {
+assert.equal((await action("jobUpdate", { id: jobId, version: 0, status: "waitingParts" })).status, 422);
+for (const path of ["/more", "/jobs", "/jobs/history", "/jobs/" + jobId, "/overview", "/customers", "/vehicles"]) {
   assert.equal((await fetch(base + path, { headers: { Cookie: cookie } })).status, 200, path);
+}
+for (const path of ["/receipts", "/invoices", "/jobs/billing", "/inventory", "/purchasing", "/cash", "/cash/transactions", "/balances", "/debts", "/payroll", "/reports", "/business", "/opening", "/audit", "/settings"]) {
+  assert.equal((await fetch(base + path, { headers: { Cookie: cookie } })).status, 404, path);
 }
 assert.equal((await fetch(base + "/jobs/" + id, { headers: { Cookie: cookie } })).status, 200);
 assert.equal(await save("jobUpdate", { id: jobId, version: 0, status: "cancelled", reason: "Customer cancelled" }), jobId);
@@ -89,6 +87,7 @@ const intakeLink = new RegExp("/jobs/" + intakeId);
 assert.match(await (await jobsBy("/jobs", "inProgress")).text(), intakeLink);
 assert.doesNotMatch(await (await jobsBy("/jobs/history", "")).text(), intakeLink);
 assert.equal((await action("jobUpdate", { id: intakeId, version: 0, status: "delivered" })).status, 422);
+assert.equal((await action("jobUpdate", { id: intakeId, version: 0, status: "ready" })).status, 422);
 const deliver = { id: intakeId, version: 0, status: "delivered", deliveryDate: "2025-11-19" };
 assert.equal((await action("jobUpdate", { ...deliver, deliveryDate: "2025-11-16" })).status, 422);
 assert.equal((await action("jobUpdate", { ...deliver, deliveryDate: "2099-01-01" })).status, 422);
@@ -98,9 +97,6 @@ assert.equal(await save("jobUpdate", deliver, deliveryKey), intakeId);
 assert.doesNotMatch(await (await jobsBy("/jobs", "")).text(), intakeLink);
 assert.equal((await action("jobIntake", { ...intake, id: intakeId, version: 0 })).status, 409);
 assert.match(await (await jobsBy("/jobs/history", "delivered")).text(), intakeLink);
-const readyId = await save("jobIntake", intake);
-assert.equal(await save("jobUpdate", { id: readyId, version: 0, status: "ready", finishedAt: "2025-11-19" }), readyId);
-assert.equal(await save("jobUpdate", { id: readyId, version: 1, status: "delivered" }), readyId);
 assert.equal((await fetch(base + "/api/export?report=payroll", { headers: { Cookie: cookie } })).status, 403);
-console.log("PASS held jobs, delivery dates, old ready jobs, legacy visits, validation, retries, and access scope.");
+console.log("PASS held jobs, direct delivery, retired job statuses, legacy visits, validation, retries, and access scope.");
 

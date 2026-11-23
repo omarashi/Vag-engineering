@@ -2,23 +2,13 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { postAction, signIn } from "./support/http.mjs";
 
 const base = process.env.TEST_URL;
 if (!base || !new URL(process.env.DATABASE_URL).pathname.endsWith("_test")) throw Error("Use the isolated test instance and database.");
 const db = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) });
-const headers = { Origin: base, "Content-Type": "application/json" };
-async function login(role) {
-  const result = await fetch(base + "/api/auth/sign-in/email", {
-    method: "POST", headers, body: JSON.stringify({ email: role + "@vag-demo.test", password: "Demo-Workshop-2026!" }),
-  });
-  assert.equal(result.status, 200);
-  return result.headers.getSetCookie().map((row) => row.split(";")[0]).join("; ");
-}
-function action(cookie, name, data, key = randomUUID()) {
-  return fetch(base + "/api/actions/" + name, {
-    method: "POST", headers: { ...headers, Cookie: cookie, "Idempotency-Key": key }, body: JSON.stringify(data),
-  });
-}
+const login = (role) => signIn(base, role + "@vag-demo.test");
+const action = (cookie, name, data, key) => postAction(base, cookie, name, data, key);
 async function post(cookie, name, data, key) {
   const result = await action(cookie, name, data, key);
   assert.equal(result.status, 200, await result.clone().text());
@@ -39,7 +29,14 @@ try {
     serviceDetails: { maintenance: "Replaced engine oil and filter.", tuning: "Calibrated ECU and checked boost logs." },
     parts: [{ partId, quantity: "2" }],
   };
+  const overQuantity = { parts: [{ partId, quantity: "8.001" }] };
+  const rejectedIntake = await action(technician, "visit", { ...visit, ...overQuantity });
+  assert.equal(rejectedIntake.status, 409);
+  assert.equal((await rejectedIntake.json()).error, "stockConflict");
   const visitId = await post(technician, "visit", visit);
+  const rejectedQuantityEdit = await action(technician, "visit", { ...visit, ...overQuantity, id: visitId, version: 0 });
+  assert.equal(rejectedQuantityEdit.status, 409);
+  assert.equal((await rejectedQuantityEdit.json()).error, "stockConflict");
   const catalogPart = await db.part.findUniqueOrThrow({ where: { id: partId } });
   await post(owner, "part", { ...part, id: partId, version: catalogPart.version, price: "225" });
   assert.equal(await onHand(), "8");
@@ -75,11 +72,30 @@ try {
   assert.equal(invoice.allocations[0].amount, 20000n);
   assert.equal((await action(owner, "visitInvoice", { visitId, servicePrices, at: "2025-11-17" })).status, 409);
   assert.equal((await action(owner, "visitReceipt", { ...payment, amount: "100" })).status, 409);
-  const nextPayment = await post(owner, "visitReceipt", { ...payment, servicePrices: undefined, amount: "300" });
+  const balancePayment = {
+    kind: "receipt", invoiceId: invoice.id, amount: "300", at: "2025-11-17", accountId: account.id,
+  };
+  assert.equal((await action(technician, "payment", balancePayment)).status, 403);
+  for (const [at, error] of [["2025-11-16", "paymentBeforeInvoice"], ["2099-01-01", "futurePayment"]]) {
+    const result = await action(owner, "payment", { ...balancePayment, at });
+    assert.equal(result.status, 422);
+    assert.equal((await result.json()).error, error);
+  }
+  assert.equal((await action(owner, "payment", { ...balancePayment, amount: "300.01" })).status, 422);
+  const balanceKey = randomUUID();
+  const nextPayment = await post(owner, "payment", balancePayment, balanceKey);
+  assert.equal(await post(owner, "payment", balancePayment, balanceKey), nextPayment);
   assert.notEqual(nextPayment, receipt);
+  assert.equal((await action(owner, "payment", balancePayment)).status, 422);
   assert.equal(await db.document.count({ where: { sourceId: visitId, kind: "invoice" } }), 1);
   assert.equal(await onHand(), "6");
-  const read = await fetch(base + "/print/payment/" + receipt + "?lang=ar", { headers: { Cookie: technician } });
+  const originalReceipt = await db.payment.findUniqueOrThrow({ where: { id: receipt } });
+  const receiptBusiness = { ...originalReceipt.snapshot.business, name: "Workshop Print QA", logo: "/storefront.jpg" };
+  const legacySnapshot = { ...originalReceipt.snapshot, business: receiptBusiness };
+  delete legacySnapshot.cashTendered;
+  delete legacySnapshot.receiptTotal;
+  await db.payment.update({ where: { id: receipt }, data: { snapshot: legacySnapshot } });
+  const read = await fetch(base + "/print/payment/" + receipt + "?lang=ar", { headers: { Cookie: accountant } });
   assert.equal(read.status, 200);
   const html = await read.text();
   assert.match(html, /dir="rtl" lang="ar-EG"/);
@@ -87,12 +103,19 @@ try {
   assert.match(html, /Replaced engine oil and filter/);
   assert.match(html, /Calibrated ECU and checked boost logs/);
   assert.match(html, /Oil filter/);
-  const invoicePrint = await fetch(base + "/print/record/" + invoice.id + "?lang=en", { headers: { Cookie: technician } });
+  assert.match(html, /alt="Workshop Print QA"[^>]*src="\/storefront\.jpg"/);
+  assert.match(html, /receipt-print-brand"><strong>Workshop Print QA/);
+  assert.match(html, /الباقي اللي اتردّ<\/dt><dd>—<\/dd>/);
+  const invoicePrint = await fetch(base + "/print/record/" + invoice.id + "?lang=en", { headers: { Cookie: accountant } });
   assert.equal(invoicePrint.status, 200);
   const invoiceHtml = await invoicePrint.text();
   assert.match(invoiceHtml, /Replaced engine oil and filter/);
   assert.match(invoiceHtml, /Calibrated ECU and checked boost logs/);
   assert.match(invoiceHtml, /Oil filter/);
+  assert.match(invoiceHtml, /Payments received.*500\.00/);
+  assert.match(invoiceHtml, /Amount due.*0\.00/);
+  assert.match(html, /الإجمالي<\/dt><dd><bdi>[^<]*٥٠٠٫٠٠/);
+  assert.match(html, /المدفوع<\/dt><dd><bdi>[^<]*٢٠٠٫٠٠/);
   const secondCar = await post(owner, "vehicle", { partyId, make: "Audi", model: "A3" });
   async function chargeVisit(at, vehicleId, price, detail) {
     const sourceId = await post(technician, "visit", {
@@ -110,23 +133,35 @@ try {
   assert.equal((await action(owner, "customerDebtPayment", { ...debt, at: "2025-11-18" })).status, 422);
   assert.equal((await action(owner, "customerDebtPayment", { ...debt, at: "2099-01-01" })).status, 422);
   const debtKey = randomUUID();
-  const installment = await post(accountant, "customerDebtPayment", debt, debtKey);
-  assert.equal(await post(accountant, "customerDebtPayment", debt, debtKey), installment);
+  const shortCash = await action(accountant, "customerDebtPayment", { ...debt, cashTendered: "300" });
+  assert.equal(shortCash.status, 422);
+  assert.equal((await shortCash.json()).error, "invalidCashTendered");
+  const cardTender = await action(accountant, "customerDebtPayment", { ...debt, method: "card", cashTendered: "400" });
+  assert.equal(cardTender.status, 422);
+  const debtWithChange = { ...debt, cashTendered: "٤٠٠" };
+  const installment = await post(accountant, "customerDebtPayment", debtWithChange, debtKey);
+  assert.equal(await post(accountant, "customerDebtPayment", debtWithChange, debtKey), installment);
   const ledgerEntry = await db.payment.findUniqueOrThrow({ where: { id: installment }, include: { allocations: true, movements: true } });
   assert.equal(ledgerEntry.movements.length, 1);
   assert.equal(ledgerEntry.movements[0].amount, 35000n);
+  assert.equal(ledgerEntry.amount, 35000n);
+  assert.equal(ledgerEntry.snapshot.cashTendered, "40000");
+  assert.equal(ledgerEntry.snapshot.receiptTotal, "70000");
   assert.deepEqual(new Map(ledgerEntry.allocations.map(({ documentId, amount }) => [documentId, amount])), new Map([[older, 30000n], [newer, 5000n]]));
   assert.equal(ledgerEntry.snapshot.customerDebtAfter, "37500");
   assert.equal(ledgerEntry.snapshot.vehicle, null);
   const readReceipt = async (id) => {
-    const response = await fetch(base + "/print/payment/" + id + "?lang=en", { headers: { Cookie: technician } });
+    const response = await fetch(base + "/print/payment/" + id + "?lang=en", { headers: { Cookie: accountant } });
     assert.equal(response.status, 200);
     return response.text();
   };
   const nextReceipt = await readReceipt(installment);
   assert.match(nextReceipt, /Inspect brakes and suspension/);
   assert.match(nextReceipt, /Scan transmission faults/);
-  assert.match(nextReceipt, /Customer balance after payment.*375\.00/);
+  assert.match(nextReceipt, /Total<\/dt><dd><bdi>EGP\s*700\.00/);
+  assert.match(nextReceipt, /Paid<\/dt><dd><bdi>EGP\s*400\.00/);
+  assert.match(nextReceipt, /Change given<\/dt><dd><bdi>EGP\s*50\.00/);
+  assert.doesNotMatch(nextReceipt, /Customer balance after payment|Applied from this payment/);
   const settle = { ...debt, amount: "375", at: "2025-12-03" };
   const concurrently = await Promise.all([action(owner, "customerDebtPayment", settle), action(accountant, "customerDebtPayment", settle)]);
   assert.deepEqual(concurrently.map((response) => response.status).sort(), [200, 422]);
@@ -134,15 +169,43 @@ try {
   const finalEntry = await db.payment.findUniqueOrThrow({ where: { id: final }, include: { allocations: true } });
   assert.deepEqual(new Map(finalEntry.allocations.map(({ documentId, amount }) => [documentId, amount])), new Map([[newer, 35000n], [opening, 2500n]]));
   assert.equal(finalEntry.snapshot.customerDebtAfter, "0");
-  assert.match(await readReceipt(installment), /Customer balance after payment.*375\.00/);
+  assert.match(await readReceipt(installment), /Change given<\/dt><dd><bdi>EGP\s*50\.00/);
   await post(owner, "reversePayment", { id: final, at: "2025-12-03", reason: "Payment reversal QA" });
   const replacement = await post(owner, "customerDebtPayment", settle);
   assert.notEqual(replacement, final);
-  const customerPage = await fetch(base + "/customers/" + partyId, { headers: { Cookie: technician } });
+  const customerPage = await fetch(base + "/customers/" + partyId, { headers: { Cookie: accountant } });
   assert.equal(customerPage.status, 200);
   assert.match(await customerPage.text(), /Outstanding balance/);
   assert.equal(await onHand(), "6");
-  assert.equal((await fetch(base + "/receipts", { headers: { Cookie: owner } })).status, 200);
+  const receipts = await fetch(base + "/receipts?party=" + partyId, { headers: { Cookie: owner } });
+  assert.equal(receipts.status, 200);
+  assert.match(await receipts.text(), new RegExp('href="/payment/' + installment + '"'));
+  const invoices = await fetch(base + "/invoices?party=" + partyId, { headers: { Cookie: owner } });
+  assert.equal(invoices.status, 200);
+  const invoicesHtml = await invoices.text();
+  assert.match(invoicesHtml, /href="\/receipts"/);
+  assert.doesNotMatch(invoicesHtml, new RegExp('href="/payment/' + installment + '"'));
+
+  const filters = new URLSearchParams({ party: partyId, paymentKind: "receipt", from: debt.at, to: debt.at });
+  const transactions = await fetch(base + "/reports?report=payments&" + filters, { headers: { Cookie: owner } });
+  assert.equal(transactions.status, 200);
+  const transactionsUrl = new URL(transactions.url);
+  assert.equal(transactionsUrl.pathname, "/cash/transactions");
+  for (const [key, value] of filters) assert.equal(transactionsUrl.searchParams.get(key), value);
+  const transactionsHtml = await transactions.text();
+  assert.match(transactionsHtml, new RegExp('href="/payment/' + installment + '"'));
+  assert.doesNotMatch(transactionsHtml, new RegExp('href="/payment/' + receipt + '"'));
+  const csvLink = transactionsHtml.match(/href="(\/api\/export\?[^"]*)"/)?.[1];
+  assert.ok(csvLink);
+  const csvPath = csvLink.replaceAll("&amp;", "&");
+  const csv = await fetch(base + csvPath, { headers: { Cookie: owner } });
+  assert.equal(csv.status, 200);
+  assert.match(await csv.text(), new RegExp('"' + ledgerEntry.number + '"'));
+  assert.equal((await fetch(base + csvPath, { headers: { Cookie: technician } })).status, 403);
+  filters.set("paymentKind", "refund");
+  const refunds = await fetch(base + "/cash/transactions?" + filters, { headers: { Cookie: owner } });
+  assert.equal(refunds.status, 200);
+  assert.doesNotMatch(await refunds.text(), new RegExp('href="/payment/' + installment + '"'));
   const jobId = await post(technician, "job", { partyId, vehicleId, title: "Fit an oil filter" });
   const invoiceInput = { jobId, lines: [{ kind: "part", partId, price: "225", quantity: "2" }] };
   const invoiceError = async (data, code) => {
@@ -175,6 +238,81 @@ try {
   const jobPage = await fetch(base + "/record/" + jobId, { headers: { Cookie: owner } });
   assert.equal(jobPage.status, 200);
   assert.ok(!(await jobPage.text()).includes(historical.number));
+
+  const counterSale = {
+    customerName: "Counter customer " + randomUUID().slice(0, 8), at: "2025-11-17T17:00",
+    lines: [{ kind: "part", partId, quantity: "2", price: "125", discount: "5" }],
+  };
+  assert.equal((await action(technician, "invoice", counterSale)).status, 403);
+  const outOfStock = await action(owner, "invoice", { ...counterSale, lines: [{ ...counterSale.lines[0], quantity: "5" }] });
+  assert.equal(outOfStock.status, 409);
+  assert.equal((await outOfStock.json()).error, "stockConflict");
+  assert.equal(await db.party.count({ where: { name: counterSale.customerName } }), 0);
+  assert.equal(await onHand(), "4");
+  const saleKey = randomUUID();
+  const saleId = await post(owner, "invoice", counterSale, saleKey);
+  assert.equal(await post(owner, "invoice", counterSale, saleKey), saleId);
+  const sale = await db.document.findUniqueOrThrow({ where: { id: saleId }, include: { party: true, movements: true } });
+  assert.equal(sale.party.name, counterSale.customerName);
+  assert.equal(sale.vehicleId, null);
+  assert.equal(sale.total, 24500n);
+  assert.equal(sale.movements.length, 1);
+  assert.equal(await onHand(), "2");
+  const sameNameSaleId = await post(owner, "invoice", { ...counterSale, customerName: counterSale.customerName.toUpperCase() });
+  const sameNameSale = await db.document.findUniqueOrThrow({ where: { id: sameNameSaleId } });
+  assert.equal(sameNameSale.partyId, sale.partyId);
+  assert.equal(await onHand(), "0");
+  const unavailable = await action(technician, "visit", visit);
+  assert.equal(unavailable.status, 409);
+  assert.equal((await unavailable.json()).error, "stockConflict");
+  const existingVisit = await db.document.findUniqueOrThrow({ where: { id: visitId } });
+  await post(technician, "visit", { ...visit, id: visitId, version: existingVisit.version, note: "Checked service log" });
+  const counterReceipt = { kind: "receipt", invoiceId: saleId, amount: "245", accountId: account.id, at: "2025-11-17" };
+  const simultaneous = await Promise.all([action(owner, "payment", counterReceipt), action(accountant, "payment", counterReceipt)]);
+  assert.deepEqual(simultaneous.map(({ status }) => status).sort(), [200, 422]);
+  const saleReceiptId = (await simultaneous.find((response) => response.ok).json()).id;
+  const saleReceipt = await db.payment.findUniqueOrThrow({ where: { id: saleReceiptId }, include: { allocations: true } });
+  assert.equal(saleReceipt.partyId, sale.partyId);
+  assert.deepEqual(saleReceipt.allocations.map(({ documentId, amount }) => [documentId, amount]), [[saleId, 24500n]]);
+
+  const splitReceiptId = await post(owner, "payment", {
+    kind: "receipt", amount: "245", accountId: account.id, at: "2025-11-17",
+    allocations: [{ documentId: sameNameSaleId, amount: "100" }, { documentId: sameNameSaleId, amount: "145" }],
+  });
+  const released = await db.allocation.findFirstOrThrow({ where: { paymentId: splitReceiptId, amount: 10000n } });
+  await post(owner, "unallocate", { id: released.id, reason: "Correction to allocation" });
+  assert.match(await readReceipt(splitReceiptId), /Total<\/dt><dd><bdi>EGP\s*245\.00/);
+
+  const saleLine = await db.line.findFirstOrThrow({ where: { documentId: saleId } });
+  const saleCredit = await post(owner, "credit", {
+    sourceId: saleId, reason: "Counter return QA", lines: [{ sourceId: saleLine.id, quantity: "1", disposition: "none" }],
+  });
+  const refundPage = await fetch(base + "/record/" + saleCredit, { headers: { Cookie: owner } });
+  assert.match(await refundPage.text(), /Record refund/);
+  await post(owner, "payment", { kind: "refund", accountId: account.id, amount: "122.50", note: "Return QA",
+    allocations: [{ documentId: saleCredit, amount: "122.50" }] });
+  assert.equal((await db.payment.findUniqueOrThrow({ where: { id: saleReceiptId } })).reversedAt, null);
+  const settledInvoice = await fetch(base + "/print/record/" + saleId + "?lang=en", { headers: { Cookie: owner } });
+  const settledHtml = await settledInvoice.text();
+  assert.match(settledHtml, /Credits issued.*122\.50/);
+  assert.match(settledHtml, /Amount due.*0\.00/);
+
+  const heldJob = await post(technician, "jobIntake", {
+    partyId, vehicleId, jobMode: "stay", at: "2025-11-17", receivedBy: "Billing QA", services: ["repair"],
+  });
+  const checkout = { visitId: heldJob, servicePrices: { repair: "600" }, amount: "300", accountId: account.id, at: "2025-11-18" };
+  const beforeDelivery = await action(owner, "visitReceipt", checkout);
+  assert.equal(beforeDelivery.status, 422);
+  assert.equal((await beforeDelivery.json()).error, "finishBeforeBilling");
+  await post(technician, "jobUpdate", { id: heldJob, version: 0, status: "delivered", deliveryDate: "2025-11-19" });
+  const earlyInvoice = await action(owner, "visitReceipt", checkout);
+  assert.equal(earlyInvoice.status, 422);
+  assert.equal((await earlyInvoice.json()).error, "invalidInvoiceDate");
+  assert.equal(await db.document.count({ where: { sourceId: heldJob, kind: "invoice" } }), 0);
+  const heldReceipt = await post(owner, "visitReceipt", { ...checkout, at: "2025-11-19" });
+  const heldInvoice = await db.document.findFirstOrThrow({ where: { sourceId: heldJob, kind: "invoice" } });
+  assert.equal(heldInvoice.total, 60000n);
+  assert.equal((await db.allocation.findFirstOrThrow({ where: { documentId: heldInvoice.id, paymentId: heldReceipt } })).amount, 30000n);
 
   const employeeId = await post(owner, "employee", {
     name: "Weekly payroll QA " + randomUUID().slice(0, 8), startedAt: "2025-11-15", weeklySalary: "3000", paidDaysPerWeek: 6,
@@ -289,6 +427,19 @@ try {
   const deferredPayout = await post(owner,"weeklyPayroll",nextPayout);
   assert.equal((await db.payment.findUniqueOrThrow({where:{id:deferredPayout}})).amount,300000n);
   assert.ok((await db.employeeAbsence.findUniqueOrThrow({where:{id:deferredId}})).deductionEntryId);
-  console.log("PASS receipt and stock transactions, weekly payroll, advance and deduction rollover, absences, undo, and dismissal.");
+  const creditedInvoice = await chargeVisit("2025-11-20", vehicleId, "100", "Credit badge QA");
+  await post(owner, "credit", { sourceId: creditedInvoice, amount: "30", reason: "Partial credit QA" });
+  const creditedPage = await fetch(base + "/record/" + creditedInvoice, { headers: { Cookie: owner } });
+  assert.match(await creditedPage.text(), /Partially paid/);
+
+  const supplierId = await post(owner, "supplier", { name: "Duplicate SKU test " + randomUUID() });
+  const rejectedPurchase = await action(owner, "purchase", { partyId: supplierId, reference: "Duplicate SKU test",
+    lines: [{ kind: "part", productSource: "manual", description: "Conflicting product", code: part.code,
+      quantity: "1", price: "50", sellingPrice: "75" }] });
+  assert.equal(rejectedPurchase.status, 409);
+  assert.equal((await rejectedPurchase.json()).error, "duplicatePartCode");
+  assert.equal(await db.document.count({ where: { partyId: supplierId, kind: "purchase" } }), 0);
+
+  console.log("PASS receipt, counter sale and stock transactions, weekly payroll, advance and deduction rollover, absences, undo, and dismissal.");
 } finally { await db.$disconnect(); }
 

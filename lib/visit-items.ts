@@ -5,7 +5,7 @@ export type VisitPartInput = { partId: string; quantity: string };
 export type VisitPart = VisitPartInput & { name: string; code: string; unitPrice: string };
 export type WorkDetail = { service: ServiceType; detail: string };
 export const jobModes = ["quick", "stay"] as const;
-export const intakeStatuses = ["new", "inProgress", "waitingParts"] as const;
+export const intakeStatuses = ["new", "inProgress"] as const;
 
 function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};

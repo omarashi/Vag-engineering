@@ -5,7 +5,7 @@ import { FileUp, Paperclip, X } from "lucide-react";
 import { message, translate, type Language } from "@/lib/locale";
 import { Button, Panel } from "./ui";
 
-export function Attachments({lang,id,type,allow,files}:{lang:Language;id:string;type:string;allow:boolean;files:{id:string;name:string}[]}){
+export function Attachments({lang,id,type,allow,files,pdfOnly=false}:{lang:Language;id:string;type:string;allow:boolean;files:{id:string;name:string}[];pdfOnly?:boolean}){
   const router=useRouter();const dialog=useRef<HTMLDialogElement>(null);const [error,setError]=useState("");const [working,setWorking]=useState(false);
   const tr=(value:string)=>translate(lang,value);
   return <Panel title={tr("Attachments")} icon={<Paperclip size={16}/>}>
@@ -21,7 +21,7 @@ export function Attachments({lang,id,type,allow,files}:{lang:Language;id:string;
         dialog.current?.close();router.refresh();
       }catch{setError("network");}finally{setWorking(false);}
     }}><header className="dialog-head"><h2>{tr("Add attachment")}</h2><Button type="button" variant="ghost" onClick={()=>dialog.current?.close()} aria-label={tr("Close")}><X size={17}/></Button></header>
-      <div className="dialog-body"><label className="field">{tr("Choose file")}<input name="file" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp" required/></label>
+      <div className="dialog-body"><label className="field">{tr("Choose file")}<input name="file" type="file" accept={pdfOnly?".pdf":".pdf,.jpg,.jpeg,.png,.webp"} required/></label>
       {error&&<p className="error" role="alert">{message(lang,error)}</p>}</div><footer className="dialog-foot"><Button variant="primary" disabled={working}>{tr(working?"Saving…":"Upload")}</Button></footer>
     </form></dialog>}
   </Panel>;

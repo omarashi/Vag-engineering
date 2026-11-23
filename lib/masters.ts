@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { hashPassword } from "better-auth/crypto";
 import { json, type Tx } from "./db";
-import { cents, choice, date, integer, needed, normalize, record, requireRule, text, today, units, RuleError } from "./rules";
+import { cents, choice, date, integer, moneyAccountKinds, needed, normalize, record, requireRule, text, today, units, RuleError } from "./rules";
 import { prefixes, type Actor, type Change } from "./transaction";
+import { workshopPhotosEnabled } from "./workshop-photos";
+import { can } from "./permissions";
 
 export type Input = Record<string, unknown>;
 export function checkVersion(before: {version: number} | null, input: Input) {
@@ -69,10 +71,14 @@ export async function part(tx: Tx, input: Input): Promise<Change> {
     minimum:units(input.minimum || "0",true),price:cents(input.price),cost:cents(input.cost),archived:input.archived===true };
   requireRule(data.minimum.gte(0));
   requireRule(!data.archived || !before || before.onHand.isZero(), "archiveStock");
+  if (before?.code !== data.code) {
+    requireRule(!await tx.part.findUnique({ where: { code: data.code }, select: { id: true } }), "duplicatePartCode", 409);
+  }
   const after = id ? await tx.part.update({where:{id},data:{...data,version:{increment:1}}}) : await tx.part.create({data});
   return {id:after.id,before,after};
 }
 export async function employee(tx: Tx, input: Input, actor: Actor): Promise<Change> {
+  requireRule(can(actor.role,"employeeDismiss") || (input.endedAt === undefined && input.archived === undefined), "forbidden", 403);
   const id = text(input.id,120);
   const before = id ? await tx.employee.findUnique({where:{id}}) : null;
   checkVersion(before,input);
@@ -96,7 +102,7 @@ export async function account(tx: Tx,input: Input): Promise<Change> {
   const id=text(input.id,120);
   const before=id ? await tx.moneyAccount.findUnique({where:{id}}) : null;
   checkVersion(before,input);
-  const data={name:needed(input.name),kind:choice(input.kind,["cash","bank"] as const),archived:input.archived===true};
+  const data={name:needed(input.name),kind:choice(input.kind,moneyAccountKinds),archived:input.archived===true};
   const after=id ? await tx.moneyAccount.update({where:{id},data:{...data,version:{increment:1}}}) : await tx.moneyAccount.create({data});
   return {id:after.id,before,after};
 }
@@ -114,10 +120,12 @@ export async function settings(tx: Tx,input: Input): Promise<Change> {
   const oldBusiness = before.find((row) => row.key === "business")?.value as {version?:number} | undefined;
   const version = oldBusiness?.version ?? 0;
   requireRule(integer(input.version ?? 0,0,99999999) === version,"stale",409);
+  requireRule(input.workshopPhotos === undefined || typeof input.workshopPhotos === "boolean");
   const logo = text(input.logo,400);
   requireRule(!logo || /^\/[-\w./]+\.(jpg|jpeg|png|webp)$/i.test(logo) && !logo.startsWith("//") && !logo.includes(".."));
   const business = {name:needed(input.name),phone:text(input.phone,80),address:text(input.address,600),
-    footer:text(input.footer),logo:logo || "/brand.jpg",dateFormat:choice(input.dateFormat || "medium",["short","medium","long"] as const),version:version+1};
+    footer:text(input.footer),logo:logo || "/brand.jpg",dateFormat:choice(input.dateFormat || "medium",["short","medium","long"] as const),
+    workshopPhotos:input.workshopPhotos ?? workshopPhotosEnabled(oldBusiness),version:version+1};
   const source = input.prefixes ? record(input.prefixes) : {};
   const custom = Object.fromEntries(Object.keys(prefixes).filter((key)=>source[key]).map((key) => {
     const value = needed(source[key],8).toUpperCase();
@@ -152,6 +160,6 @@ export async function user(tx: Tx,input: Input): Promise<Change> {
     else await tx.account.create({data:{id:randomUUID(),userId:after.id,accountId:after.id,providerId:"credential",password:passwordHash}});
   }
   if (before && (!active || password || before.role !== after.role || before.email !== after.email)) await tx.session.deleteMany({where:{userId:after.id}});
-  return {id:after.id,before,after};
+  return {id:after.id,before,after:{...after,passwordReset:Boolean(before && password)}};
 }
 

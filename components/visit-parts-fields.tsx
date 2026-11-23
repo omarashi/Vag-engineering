@@ -1,13 +1,15 @@
-import { useId, useRef, useState } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
 import { Plus, Search, X } from "lucide-react";
 import type { VisitPartInput } from "@/lib/visit-items";
 import { translate, type Language } from "@/lib/locale";
 import { Button } from "./ui";
 
-export type VisitPartOption = { value: string; name: string; code: string; price: string };
+export type VisitPartOption = { value: string; name: string; code: string; price?: string; unavailable?: boolean };
 
-export function VisitPartsFields({ lang, options, parts, onChange }: {
+export function VisitPartsFields({ lang, options, parts, onChange, priceDetails, legend = "Parts sold" }: {
   lang: Language; options: VisitPartOption[]; parts: VisitPartInput[]; onChange: (parts: VisitPartInput[]) => void;
+  priceDetails?: (part: VisitPartInput, option: VisitPartOption) => ReactNode;
+  legend?: string;
 }) {
   const [query, setQuery] = useState("");
   const [browsing, setBrowsing] = useState(false);
@@ -16,7 +18,8 @@ export function VisitPartsFields({ lang, options, parts, onChange }: {
   const t = (key: string) => translate(lang, key);
   const chosen = new Set(parts.map((part) => part.partId));
   const catalog = new Map(options.map((option) => [option.value, option]));
-  const available = options.filter((option) => !chosen.has(option.value));
+  const inStock = options.filter((option) => !option.unavailable);
+  const available = inStock.filter((option) => !chosen.has(option.value));
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const showResults = browsing || terms.length > 0;
   const matches = showResults ? available.filter((option) => {
@@ -32,12 +35,12 @@ export function VisitPartsFields({ lang, options, parts, onChange }: {
   }
 
   return <fieldset className="log-part-fields">
-    <legend>{t("Parts sold")}</legend>
+    <legend>{t(legend)}</legend>
     {parts.map((part) => {
       const option = catalog.get(part.partId);
       return <div key={part.partId} className="log-part-fields-row">
         <span className="log-part-choice"><bdi>{option?.name}</bdi>
-          <small><bdi>{option?.code}</bdi> · <bdi>{option?.price}</bdi></small>
+          <small><bdi>{option?.code}</bdi>{option?.price && <> · <bdi>{option.price}</bdi></>}</small>
         </span>
         <label className="field"><span>{t("Quantity")}</span>
           <input required inputMode="decimal" dir="ltr" value={part.quantity}
@@ -45,6 +48,7 @@ export function VisitPartsFields({ lang, options, parts, onChange }: {
         </label>
         <button type="button" className="icon-button" aria-label={t("Remove part")}
           onClick={() => onChange(parts.filter((item) => item.partId !== part.partId))}><X size={17}/></button>
+        {priceDetails && option && <div className="log-part-price-details">{priceDetails(part, option)}</div>}
       </div>;
     })}
     {available.length > 0 && parts.length < 50 && <>
@@ -70,11 +74,11 @@ export function VisitPartsFields({ lang, options, parts, onChange }: {
         {matches.length > 0 ? <ul className="log-part-results">{matches.map((option) => <li key={option.value}>
           <button type="button" className="log-part-choice" onClick={() => addPart(option)}>
             <bdi>{option.name}</bdi>
-            <small><bdi>{option.code}</bdi> · <bdi>{option.price}</bdi></small>
+            <small><bdi>{option.code}</bdi>{option.price && <> · <bdi>{option.price}</bdi></>}</small>
           </button>
         </li>)}</ul> : <p role="status">{t("No matching parts")}</p>}
       </div>
     </>}
-    {!options.length && <p>{t("Add a part in Inventory to select it here.")}</p>}
+    {!inStock.length && <p>{t("No parts in stock.")}</p>}
   </fieldset>;
 }

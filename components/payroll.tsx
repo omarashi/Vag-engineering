@@ -9,7 +9,7 @@ import { documents, payments } from "@/lib/views";
 import { AbsenceToggle } from "./absence-toggle";
 import { ActionForm, type ActionSpec, type Option } from "./action-form";
 import type { ModuleProps } from "./modules";
-import { Actions, Amt, DocRegister, Heading, Info, Pages, PayRegister, Ref, Register, Toolbar } from "./register";
+import { Actions, Amt, CashAccountSetup, DocRegister, Heading, Info, Pages, PayRegister, Ref, Register, Toolbar } from "./register";
 import { Badge, Button, ButtonLink, Empty, Panel } from "./ui";
 
 type PayrollAction = "salaryPayment" | "advance" | "deduction";
@@ -175,7 +175,7 @@ export async function EmployeeView({ lang, forms, id, query }: ModuleProps & { i
           {needSalary && <p className="notice">{t("Set the weekly salary in Edit profile to open a pay week.")}</p>}
           {pendingAbsence && <p className="notice">{t("Absence deduction pending")}</p>}
           <div className="log-actions">
-            {mayPay && (accounts.length ? payrollAction("salaryPayment") : <ButtonLink href="/cash?new=account">{t("Set up a cash account")}</ButtonLink>)}
+            {mayPay && (accounts.length ? payrollAction("salaryPayment") : <CashAccountSetup lang={lang} canManage={forms.can("account")}/>)}
             {mayAdjust && active && accounts.length > 0 && payrollAction("advance")}
             {mayAdjust && !locked && payrollAction("deduction")}
             {forwarded && <ButtonLink href={path+"?week="+target.week}>{t("View next unpaid week")}</ButtonLink>}

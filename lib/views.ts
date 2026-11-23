@@ -1,4 +1,4 @@
-import { Prisma, type DocumentKind, type PaymentKind } from "@prisma/client";
+import { PaymentKind, Prisma, type DocumentKind } from "@prisma/client";
 import { db, plain } from "./db";
 import { date, today } from "./rules";
 import { documentAmountDue, due } from "./trade";
@@ -10,7 +10,7 @@ export const includes={
   party:true,vehicle:true,employee:true,source:{select:{id:true,number:true,kind:true}},
   assignments:{include:{employee:true}},lines:{orderBy:{position:"asc" as const}},
   jobStock:{include:{part:true}},attachments:true,
-  related:{where:{kind:{not:"quote"}},select:{id:true,number:true,kind:true,status:true}},
+  related:{where:{kind:{not:"quote"}},select:{id:true,number:true,kind:true,status:true,total:true}},
   payroll:{orderBy:{at:"asc" as const}},allocations:{include:{payment:true}},movements:{include:{part:true}},
 } as const;
 
@@ -41,13 +41,14 @@ async function documentBalanceTotals(ids:string[]) {
   };
 }
 
-export async function documents(kinds:DocumentKind[],filters:Filters={},options: {detail?:boolean;statuses?:string[];workshop?:boolean} = {}){
+export async function documents(kinds:DocumentKind[],filters:Filters={},options: {detail?:boolean;statuses?:string[];workshop?:boolean;unbilled?:boolean} = {}){
   const query=filters.q?.trim().slice(0,100);
   const like=query ? textLike(query) : undefined;
   const rows=await db.document.findMany({
     where:{kind:{in:kinds},at:interval(filters),status:options.statuses ? {in:options.statuses,equals:filters.status || undefined} : filters.status || undefined,
       partyId:filters.party || undefined,vehicleId:filters.vehicle || undefined,employeeId:filters.staff || undefined,category:filters.category || undefined,
       AND:options.workshop ? workServiceFilter(filters.service) : undefined,
+      related:options.unbilled ? {none:{kind:"invoice",status:"posted"}} : undefined,
       ...(like?{OR:[{number:like},{title:like},{reference:like},{party:{OR:[{name:like},{phone:like}]}},{vehicle:{OR:[{plate:like},{vin:like},{model:like}]}},{employee:{name:like}},
         ...(options.workshop && query ? workSearch(query) : []),
       ]}:{})},
@@ -65,14 +66,20 @@ export const financial=(kind:DocumentKind)=>["invoice","purchase","customerOpeni
 export async function documentDetail(id:string){
   const row=await db.document.findUnique({where:{id,kind:{not:"quote"}},include:includes});
   if(!row) return null;
-  const balance=row.status==="posted"&&financial(row.kind)?await due(db,row):null;
-  return plain({...row,source:row.source?.kind==="quote"?null:row.source,due:balance});
+  const settlement=row.kind==="invoice"&&row.status==="posted"?{
+    received:row.allocations.filter((item)=>!item.releasedAt&&!item.payment.reversedAt).reduce((sum,item)=>sum+item.amount,0n),
+    credited:row.related.filter((item)=>isCredit(item.kind)&&item.status==="posted").reduce((sum,item)=>sum+item.total,0n),
+  }:null;
+  const balance=settlement?documentAmountDue(row.total,settlement.received,settlement.credited):
+    row.status==="posted"&&financial(row.kind)?await due(db,row):null;
+  return plain({...row,source:row.source?.kind==="quote"?null:row.source,due:balance,settlement});
 }
 export async function payments(filters:Filters={},id?:string,kinds?:PaymentKind[]){
   const like=filters.q ? textLike(filters.q.slice(0,100)) : undefined;
-  return plain(await db.payment.findMany({where:{id,kind:filters.paymentKind ?? (kinds ? {in:kinds} : undefined),at:interval(filters),partyId:filters.party || undefined,employeeId:filters.staff || undefined,
+  const kind=filters.paymentKind&&Object.hasOwn(PaymentKind,filters.paymentKind)?filters.paymentKind:undefined;
+  return plain(await db.payment.findMany({where:{id,kind:kinds ? {in:kinds} : kind,at:interval(filters),partyId:filters.party || undefined,employeeId:filters.staff || undefined,
     ...(like?{OR:[{number:like},{note:like},{party:{OR:[{name:like},{phone:like}]}},{employee:{name:like}}]}:{})},
-    take:id?1:100,skip:id?0:offset(filters),orderBy:{at:"desc"},
+    take:id?1:100,skip:id?0:offset(filters),orderBy:[{at:"desc"},{id:"desc"}],
     include:{party:true,employee:true,movements:{include:{account:true}},allocations:{include:{document:{select:{id:true,number:true,kind:true}}}}}}));
 }
 export async function parties(kind:"customer"|"supplier",filters:Filters={},id?:string){
@@ -171,12 +178,7 @@ export async function overview(){
   const first=current.slice(0,7)+"-01";
   const monthStart=date(first+"T00:00");
   const dates=Array.from({length:7},(_,index)=>today(new Date(starts.getTime()-(6-index)*86400000+3600000)));
-  const [queue,active,appointments,numAppointments,stock,debt,financial,cash,series]=await Promise.all([
-    db.document.findMany({where:{kind:"job",status:{notIn:["cancelled","delivered"]}},take:6,orderBy:{createdAt:"desc"},
-      include:{party:true,vehicle:true,assignments:{include:{employee:true}}}}),
-    db.document.count({where:{kind:"job",status:{notIn:["cancelled","delivered"]}}}),
-    db.document.findMany({where:{kind:"appointment",status:{in:["scheduled","arrived"]},at:{gte:starts}},take:4,orderBy:{at:"asc"},include:{party:true,vehicle:true}}),
-    db.document.count({where:{kind:"appointment",status:{in:["scheduled","arrived"]},at:{gte:starts,lt:next}}}),
+  const [stock,debt,financial,cash,series]=await Promise.all([
     db.$queryRaw<Array<{id:string;name:string;code:string;available:string;minimum:string}>>`SELECT id,name,code,("onHand"-reserved)::text AS available,minimum::text FROM "Part" WHERE NOT archived AND "onHand"-reserved<=minimum ORDER BY "onHand"-reserved ASC LIMIT 5`,
     balances(),ledgerSummary({from:today(monthStart),to:current}),
     db.cashMovement.aggregate({_sum:{amount:true}}),
@@ -187,7 +189,7 @@ export async function overview(){
       SELECT ((c.at AT TIME ZONE 'UTC') AT TIME ZONE 'Africa/Cairo')::date::text AS day,'receipts' AS series, SUM(c.amount)::bigint AS amount
       FROM "CashMovement" c JOIN "Payment" p ON p.id=c."paymentId" WHERE c.at>=${date(dates[0]+"T00:00")} AND c.at<${next} AND p.kind IN ('receipt','refund') GROUP BY 1`,
   ]);
-  return plain({queue,active,appointments,numAppointments,stock,...debt,...financial,cash:cash._sum.amount ?? 0n,series,dates});
+  return plain({stock,...debt,...financial,cash:cash._sum.amount ?? 0n,series,dates});
 }
 export async function statement(id:string){
   const party=await db.party.findUnique({where:{id}});

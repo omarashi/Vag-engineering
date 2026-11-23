@@ -1,19 +1,25 @@
 import { CarFront, ChartNoAxesCombined, FileText, History, Landmark, Package, Receipt, Settings2, Truck, UsersRound, Wallet } from "lucide-react";
 import Link from "./navigation-link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import type { Actor } from "@/lib/transaction";
+import type { Role } from "@prisma/client";
 import { forms } from "@/lib/forms";
 import { overview, payments, selections } from "@/lib/views";
 import { translate, type Language } from "@/lib/locale";
 import { visitById } from "@/lib/visits";
 import { workshopIntake } from "@/lib/visit-items";
 import { Dashboard } from "./dashboard";
-import { Audit, Balances, Cash, Inventory, Invoices, Opening, Purchasing, Reports, Settings, Workshop, type Query } from "./modules";
+import { Audit, Balances, Cash, CashTransactions, Inventory, Invoices, Opening, Purchasing, Reports, Settings, Workshop, type Query } from "./modules";
 import { PartView, PartyView, PaymentView, RecordView } from "./records";
 import { EmployeeView, Payroll } from "./payroll";
 import { Actions, Heading, Pages, PayRegister, Toolbar } from "./register";
 import { ButtonLink, Panel } from "./ui";
 import { ServiceJobPage } from "./workshop-log";
+import { CounterSaleForm } from "./counter-sale";
+import { SupplierPriceList } from "./supplier-price-list";
+import { activeCustomers, visitPartOptions } from "@/lib/visit-forms";
+import { can, canViewPage } from "@/lib/permissions";
+import { today } from "@/lib/rules";
 
 const sections = [
   { title: "Workshop and sales", tools: [
@@ -31,10 +37,11 @@ const sections = [
 
 const routes = new Set<string>([...sections.flatMap(({ tools }) => tools.map(([path]) => path)), "jobs", "record", "payment"]);
 
-function More({ lang }: { lang: Language }) {
+function More({ lang, role }: { lang: Language; role: Role }) {
   const t = (key: string) => translate(lang, key);
+  const visibleSections = sections.map(({ title, tools }) => ({ title, tools: tools.filter(([path]) => canViewPage(role, path)) }));
   return <><Heading lang={lang} title="More tools"/>
-    <div className="log-stack">{sections.map(({ title, tools }) => <Panel key={title} title={t(title)}>
+    <div className="log-stack">{visibleSections.filter(({ tools }) => tools.length > 0).map(({ title, tools }) => <Panel key={title} title={t(title)}>
       <div className="office-links">{tools.map(([path, name, Icon]) => <Link className="office-link" key={path} href={"/" + path}>
         <Icon size={20}/><span>{t(name)}</span>
       </Link>)}</div>
@@ -55,15 +62,44 @@ async function Receipts({ lang, forms: actions, query }: { lang: Language; forms
 }
 
 export async function OfficePage({ lang, route, id, actor, query }: { lang: Language; route: string; id?: string; actor: Actor; query: Query }) {
-  if (route === "more" && !id) return <More lang={lang}/>;
+  if (route === "more" && !id) return <More lang={lang} role={actor.role}/>;
+  if (route === "counter-sale" && !id && can(actor.role, "invoice")) {
+    const [customers, parts] = await Promise.all([activeCustomers(), visitPartOptions(lang)]);
+    return <><Heading lang={lang} title="Counter sale"><ButtonLink href="/invoices">{translate(lang, "Invoices")}</ButtonLink></Heading>
+      <CounterSaleForm lang={lang} customers={customers} options={parts} date={today()}/></>;
+  }
   if (!routes.has(route)) notFound();
+  if (id === "price-list" && (route === "inventory" || route === "purchasing")) {
+    if (!can(actor.role, route === "inventory" ? "supplierStock" : "purchase")) notFound();
+    return <SupplierPriceList lang={lang} search={query.q} fromInventory={route === "inventory"} canEdit={can(actor.role, "supplierQuote")}/>;
+  }
+  if (route === "cash" && id === "transactions") return <CashTransactions lang={lang} query={query} role={actor.role}/>;
+  if (route === "reports" && !id && query.report === "payments") {
+    const filters = new URLSearchParams();
+    for (const key of ["q", "from", "to", "party", "staff", "page", "paymentKind"] as const) {
+      const value = query[key];
+      if (value) filters.set(key, value);
+    }
+    redirect("/cash/transactions" + (filters.size ? "?" + filters : ""));
+  }
+  if (route === "invoices" && !id && query.new === "payment") redirect("/balances?new=payment");
+  if (route === "cash" && !id && query.new === "account") {
+    if (!can(actor.role, "account")) notFound();
+    redirect("/settings?new=account");
+  }
   if (route === "business" && !id) return <Dashboard lang={lang} data={await overview()}/>;
   if (route === "jobs") {
-    if (!id || id === "history") return <Workshop lang={lang} query={query} role={actor.role} history={id === "history"}/>;
+    if (id === "billing" && !can(actor.role, "visitReceipt")) notFound();
+    if (!id || id === "history" || id === "billing") return <Workshop lang={lang} query={query} role={actor.role} view={id === "billing" ? "billing" : id === "history" ? "history" : "open"}/>;
     const row = await visitById(id);
     if (!row) notFound();
     if (row.kind === "visit" || workshopIntake(row.metadata)) return <ServiceJobPage lang={lang} row={row} role={actor.role} autoReceipt={query.new === "receipt"}/>;
     return <RecordView lang={lang} forms={forms(lang, await selections(), actor)} id={id} query={query}/>;
+  }
+  if (route === "record" && !can(actor.role, "payment")) {
+    const job = id && await visitById(id);
+    if (!job) notFound();
+    redirect("/jobs/" + job.id);
   }
   const props = { lang, forms: forms(lang, await selections(), actor), query };
   if (id) {

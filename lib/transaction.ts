@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { DocumentKind, PaymentKind } from "@prisma/client";
+import type { DocumentKind, PaymentKind, Prisma } from "@prisma/client";
 import { db, json, plain, type Tx } from "./db";
 import { requireRule } from "./rules";
 import { can } from "./permissions";
@@ -30,27 +30,53 @@ export async function audit(tx: Tx, actorId: string, action: string, entity: str
   } });
 }
 export type Change = { id: string; entity?: string; before?: unknown; after?: unknown; warning?: string };
-export async function transact(
-  actor: Actor, action: string, key: string, data: unknown, run: (tx: Tx) => Promise<Change>,
-) {
-  requireRule(can(actor.role, action), "forbidden", 403);
+
+export function requestOutcome(result: Prisma.JsonValue) {
+  if (result && typeof result === "object" && !Array.isArray(result) && typeof result.action === "string" && "response" in result) {
+    return { action: result.action, response: result.response };
+  }
+  return null;
+}
+
+export function requireRequestKey(key: string) {
   requireRule(/^[a-zA-Z0-9-]{16,80}$/.test(key), "missingRequest");
-  const hash = createHash("sha256").update(JSON.stringify({ action, data })).digest("hex");
+}
+
+export function lockedMutation<T>(actor: Actor, run: (tx: Tx, live: Actor) => Promise<T>) {
   return db.$transaction(async (tx) => {
     // The single branch uses a short database-wide mutation lock. Reads remain concurrent.
     await tx.$queryRaw`SELECT 1 AS acquired FROM pg_advisory_xact_lock(7362371)`;
     const live = await tx.user.findUnique({ where: { id: actor.id } });
-    requireRule(live?.active && can(live.role, action), "forbidden", 403);
-    const prior = await tx.request.findUnique({ where: { key } });
-    if (prior) {
-      requireRule(prior.actorId === actor.id && prior.hash === hash, "duplicateRequest", 409);
-      return prior.result;
-    }
-    const change = await run(tx);
+    requireRule(live?.active, "forbidden", 403);
+    return run(tx, live);
+  }, { maxWait: 10000, timeout: 15000 });
+}
+
+export async function priorRequest(tx: Tx, actor: Actor, key: string, hash: string) {
+  const prior = await tx.request.findUnique({ where: { key } });
+  requireRule(!prior || (prior.actorId === actor.id && prior.hash === hash), "duplicateRequest", 409);
+  return prior;
+}
+
+export function recordRequest(tx: Tx, actor: Actor, key: string, hash: string, action: string, response: Prisma.InputJsonValue) {
+  return tx.request.create({ data: { key, actorId: actor.id, hash, result: { action, response } } });
+}
+
+export async function transact(
+  actor: Actor, action: string, key: string, data: unknown, run: (tx: Tx, actor: Actor) => Promise<Change>,
+) {
+  requireRule(can(actor.role, action), "forbidden", 403);
+  requireRequestKey(key);
+  const hash = createHash("sha256").update(JSON.stringify({ action, data })).digest("hex");
+  return lockedMutation(actor, async (tx, live) => {
+    requireRule(can(live.role, action), "forbidden", 403);
+    const prior = await priorRequest(tx, live, key, hash);
+    if (prior) return requestOutcome(prior.result)?.response ?? prior.result;
+    const change = await run(tx, live);
     await audit(tx, actor.id, action, change.entity ?? action, change.id, change.before, change.after);
     const result = plain({ id: change.id, warning: change.warning ?? null });
-    await tx.request.create({ data: { key, actorId: actor.id, hash, result } });
+    await recordRequest(tx, live, key, hash, action, result);
     return result;
-  }, { maxWait: 10000, timeout: 15000 });
+  });
 }
 

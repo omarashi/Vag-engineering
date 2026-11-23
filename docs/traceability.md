@@ -91,7 +91,7 @@ The [source requirements](requirements.md) define each ID. The implementation li
 | ✓ FR-CASH-04 | [lib/cash.ts](../lib/cash.ts) · [components/modules.tsx](../components/modules.tsx) | AT-02, AT-07, AT-08 and AT-09 |
 | ✓ FR-CASH-05 | [lib/cash.ts](../lib/cash.ts) · [components/modules.tsx](../components/modules.tsx) | AT-02, AT-07, AT-08 and AT-09 |
 | ✓ FR-CASH-06 | [lib/cash.ts](../lib/cash.ts) · [components/modules.tsx](../components/modules.tsx) | AT-02, AT-07, AT-08 and AT-09 |
-| ◐ FR-CASH-07 | [lib/cash.ts](../lib/cash.ts) · [components/modules.tsx](../components/modules.tsx) | Cash counts and variance are recorded. The dedicated daily reconciliation report is pending. |
+| ◐ FR-CASH-07 | [components/modules.tsx](../components/modules.tsx) | Transactions are available from Cash & expenses. The manual cash count was retired. |
 | ✓ FR-CASH-08 | [lib/cash.ts](../lib/cash.ts) · [components/modules.tsx](../components/modules.tsx) | AT-02, AT-07, AT-08 and AT-09 |
 | ✓ FR-PAY-01 | [lib/cash.ts](../lib/cash.ts) · [components/records.tsx](../components/records.tsx) | AT-09, AT-10 and AT-12 |
 | ✓ FR-PAY-02 | [lib/cash.ts](../lib/cash.ts) · [components/records.tsx](../components/records.tsx) | AT-09, AT-10 and AT-12 |
@@ -130,7 +130,7 @@ The [source requirements](requirements.md) define each ID. The implementation li
 | IDs | Application screens and validation |
 | --- | --- |
 | UR-01, UR-02, UR-10, UR-11 | Overview, Invoices, Cash and Balances. AT-02, AT-07, AT-08. |
-| UR-03, UR-04, UR-05, UR-06, UR-07 | Workshop jobs, global search, Customers, Vehicles, quote approvals. AT-01, AT-03, AT-10, AT-11. |
+| UR-03, UR-04, UR-05, UR-06, UR-07 | Workshop jobs, global search, Customers and Vehicles. Quotations were retired. AT-01, AT-03, AT-10, AT-11. |
 | UR-08, UR-09 | Inventory, movement history, job part issue, counter sales. AT-03, AT-04, AT-06. |
 | UR-12, UR-13 | Employees, payroll and bilingual A4 documents. AT-09, AT-10, AT-13. |
 | UR-14, UR-15 | Branded bilingual responsive shell and Docker/TLS deployment guide. Hosted access pending. |

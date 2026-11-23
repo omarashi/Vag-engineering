@@ -6,7 +6,7 @@ Verification ran on Windows with Next.js 16.4.6, Prisma 7.10.1, Better Auth 1.7.
 | --- | --- |
 | Initial migration and demo bootstrap | Applied on an isolated UTF-8 PostgreSQL database. |
 | TypeScript, production build and unit tests | Passed. Four focused unit tests covered EGP precision, Cairo dates, role rules and attachment signatures. |
-| Authenticated HTTP acceptance | 14 checks passed. Includes one winner in a concurrent last-unit sale, transaction rollback after an earlier stock change, idempotent receipt replay, debt reconciliation, return/refund/reversal, salary advance and direct technician permissions. |
+| Authenticated HTTP acceptance and receipt tests | Cover workshop validation, retired statuses, technician access, concurrent sales, transaction rollback, idempotent receipt replay, debt reconciliation, returns, reversals and salary advances. |
 | Browser | Job creation and update, module navigation, simulated lost response and safe retry, 360 px layout, dark and light themes, and Arabic RTL passed. |
 | A4 PDFs | Edge generated English and Arabic multipage invoices and receipts and verified A4 media boxes. Physical printer review remains pending. |
 | Recovery | PostgreSQL dump and attachment archive restored to a new database in two seconds for the sample dataset. Document totals, allocations, cash, stock, payroll, audit counts and attachment hashes matched the source. |

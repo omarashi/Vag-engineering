@@ -1,4 +1,4 @@
-import { currentUser } from "@/lib/auth";
+import { mutationUser } from "@/lib/auth";
 import { command } from "@/lib/commands";
 import { RuleError } from "@/lib/rules";
 import { Prisma } from "@prisma/client";
@@ -6,11 +6,7 @@ import { Prisma } from "@prisma/client";
 export async function POST(request:Request, {params}:{params:Promise<{action:string}>}) {
   const requestId=request.headers.get("idempotency-key") ?? "";
   try {
-    if(request.headers.get("origin") !== (process.env.BETTER_AUTH_URL ?? new URL(request.url).origin)){
-      return Response.json({error:"forbidden"},{status:403});
-    }
-    const actor=await currentUser(request.headers);
-    if (!actor) return Response.json({error:"unauthenticated"},{status:401});
+    const actor=await mutationUser(request);
     if (!request.headers.get("content-type")?.includes("application/json")) return Response.json({error:"invalid"},{status:415});
     const body=await request.text();
     if(body.length>160000) return Response.json({error:"invalid"},{status:413});

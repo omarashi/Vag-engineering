@@ -2,10 +2,6 @@ import Link from "./navigation-link";
 import type { ReactNode } from "react";
 import { ChevronRight, Inbox } from "lucide-react";
 import { label, translate, type Language } from "@/lib/locale";
-import { twMerge } from "tailwind-merge";
-import { clsx } from "clsx";
-
-export function cn(...inputs:Parameters<typeof clsx>){return twMerge(clsx(...inputs));}
 import { Button } from "./ui/button";
 export { Button };
 export function ButtonLink({children,href,primary=false}:{children:ReactNode;href:string;primary?:boolean}){
@@ -13,8 +9,8 @@ export function ButtonLink({children,href,primary=false}:{children:ReactNode;hre
 }
 export function Badge({lang,value}:{lang:Language;value:string}){
   const tone=["inProgress","arrived","posted"].includes(value)?"blue":
-    ["approved","paid","ready","completed","delivered","received"].includes(value)?"green":
-    ["waitingParts","partial","scheduled","awaitingApproval","inspecting"].includes(value)?"gold":
+    ["approved","paid","settled","completed","delivered","received"].includes(value)?"green":
+    ["partial","scheduled","awaitingApproval","inspecting"].includes(value)?"gold":
     ["cancelled","reversed","unpaid","noShow"].includes(value)?"red":"neutral";
   return <span className={"badge "+tone}><i/>{label(lang,value)}</span>;
 }

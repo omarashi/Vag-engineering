@@ -24,24 +24,27 @@ async function employeeId(tx:Tx,input:unknown){
 }
 type PreparedAllocation = { documentId:string; amount:bigint };
 
-async function addAllocations(tx:Tx,payment:Payment,rows:PreparedAllocation[]){
+async function addAllocations(tx:Tx,payment:Payment,rows:PreparedAllocation[],receivedOn?:string){
   const existing=await tx.allocation.aggregate({where:{paymentId:payment.id,releasedAt:null},_sum:{amount:true}});
   let available=payment.amount-(existing._sum.amount ?? 0n);
   const recorded=[];
   const balances:Record<string,string>={};
+  const documentTotals=new Map<string,bigint>();
   for(const row of rows){
     const {documentId,amount}=row;
     const target=await tx.document.findUnique({where:{id:documentId}});
     requireRule(target && destinations[payment.kind]?.includes(target.kind) && target.status==="posted","invalidDocument");
     requireRule(target.partyId===payment.partyId && target.employeeId===payment.employeeId,"partyMismatch");
+    requireRule(!receivedOn || receivedOn>=today(target.at),"paymentBeforeInvoice");
     const before=await due(tx,target);
     requireRule(amount>0n && amount<=available && amount<=before,"amountMismatch");
     available-=amount;
     const allocation=await tx.allocation.create({data:{documentId,paymentId:payment.id,amount}});
     recorded.push(allocation);
     balances[allocation.id]=String(before-amount);
+    documentTotals.set(documentId,target.total);
   }
-  return {available,recorded,balances};
+  return {available,recorded,balances,total:[...documentTotals.values()].reduce((sum,value)=>sum+value,0n)};
 }
 function allocationInput(input:unknown):PreparedAllocation[]{
   return list(input).map((row)=>({documentId:needed(row.documentId),amount:cents(row.amount)}));
@@ -58,9 +61,14 @@ async function postPayment(tx:Tx,input:Input,actor:Actor,debt?:{allocations:Prep
   requireRule(signed ? amount!==0n : amount>0n,"amountMismatch");
   const accountId=await cashAccount(tx,input.accountId);
   const at=date(input.at);
-  const rows=debt?.allocations ?? allocationInput(input.allocations ?? []);
+  const receivedOn=kind==="receipt"?today(at):undefined;
+  requireRule(!receivedOn || receivedOn<=today(),"futurePayment");
+  const invoiceId=input.invoiceId===undefined?null:needed(input.invoiceId);
+  requireRule(!invoiceId || kind==="receipt" && !debt && input.allocations===undefined,"invalidDocument");
+  const rows=invoiceId ? [{documentId:invoiceId,amount}] : debt?.allocations ?? allocationInput(input.allocations ?? []);
   const target=rows.length ? await tx.document.findUnique({where:{id:rows[0].documentId}}) : null;
   requireRule(!rows.length || target,"invalidDocument");
+  requireRule(!invoiceId || target?.kind==="invoice","invalidDocument");
   const partyKind=kind==="receipt" || kind==="refund" ? "customer" : ["supplierPayment","supplierRefund"].includes(kind) ? "supplier" : null;
   const partyId=partyKind ? await validParty(tx,input.partyId ?? target?.partyId,partyKind) : null;
   const staff=["salaryPayment","advance"].includes(kind) ? await employeeId(tx,input.employeeId ?? target?.employeeId) : null;
@@ -73,10 +81,17 @@ async function postPayment(tx:Tx,input:Input,actor:Actor,debt?:{allocations:Prep
   const note=text(input.note,2000);
   if (["refund","supplierRefund","transfer","withdrawal","contribution","cashOpening"].includes(kind)) needed(note,2000);
   const method=needed(input.method || (kind==="transfer" ? "transfer" : "cash"),80);
+  const tender=text(input.cashTendered,32);
+  const cashReceipt=kind==="receipt" && method==="cash";
+  requireRule(!tender || cashReceipt,"invalidCashTendered");
+  const cashTendered=cashReceipt ? tender ? cents(tender) : amount : null;
+  requireRule(cashTendered===null || cashTendered>=amount,"invalidCashTendered");
   const multiple=rows.some((row)=>row.documentId!==target?.id);
   const entry=await tx.payment.create({data:{number:await number(tx,kind),kind,at,amount,partyId,employeeId:staff,method,note,actorId:actor.id,
-    snapshot:json({...await snapshot(tx,partyId,multiple ? null : target?.vehicleId,staff) as object,jobId})}});
-  const {available,recorded,balances}=await addAllocations(tx,entry,rows);
+    snapshot:json({...await snapshot(tx,partyId,multiple ? null : target?.vehicleId,staff) as object,jobId,
+      ...(kind==="receipt" && !rows.length ? {receiptTotal:String(amount)} : {}),
+      ...(cashTendered!==null ? {cashTendered:String(cashTendered)} : {})})}});
+  const {available,recorded,balances,total}=await addAllocations(tx,entry,rows,receivedOn);
   requireRule(!["refund","supplierRefund","salaryPayment","expensePayment"].includes(kind) || available===0n,"allocationRequired");
   requireRule(!["receipt","supplierPayment"].includes(kind) || available===0n || input.allowCredit===true,"allowCredit");
   const incoming=["receipt","supplierRefund","contribution","cashOpening"].includes(kind);
@@ -88,7 +103,7 @@ async function postPayment(tx:Tx,input:Input,actor:Actor,debt?:{allocations:Prep
   }
   await tx.cashMovement.createMany({data:movements});
   const after=kind==="receipt"&&recorded.length?await tx.payment.update({where:{id:entry.id},data:{snapshot:json({
-    ...entry.snapshot as object, invoiceBalances:balances, ...(debt ? {customerDebtAfter:String(debt.balance)} : {}),
+    ...entry.snapshot as object, invoiceBalances:balances, receiptTotal:String(total), ...(debt ? {customerDebtAfter:String(debt.balance)} : {}),
   })}}):entry;
   return {id:after.id,after:{...after,allocations:recorded,movements}};
 }
@@ -97,8 +112,6 @@ export async function customerDebtPayment(tx:Tx,input:Input,actor:Actor):Promise
   const partyId=await validParty(tx,input.partyId,"customer");
   const amount=cents(input.amount);
   requireRule(amount>0n,"amountMismatch");
-  const paymentDay=today(date(input.at));
-  requireRule(paymentDay<=today(),"futurePayment");
   const debts=await openCustomerDebts(tx,partyId);
   const balance=debts.reduce((sum,row)=>sum+row.balance,0n);
   requireRule(amount<=balance,"debtOverpayment");
@@ -107,7 +120,6 @@ export async function customerDebtPayment(tx:Tx,input:Input,actor:Actor):Promise
   const allocations:PreparedAllocation[]=[];
   for(const debt of debts){
     if(unapplied===0n) break;
-    requireRule(today(debt.at)<=paymentDay,"invalidDate");
     const applied=unapplied<debt.balance?unapplied:debt.balance;
     allocations.push({documentId:debt.id,amount:applied});
     unapplied-=applied;
@@ -156,15 +168,6 @@ export async function expense(tx:Tx,input:Input,actor:Actor):Promise<Change>{
   const after=await document(tx,actor,"expense",{...documentDates(input),status:"posted",total,
     category:needed(input.category,120),title:needed(input.title),note:text(input.note),reference:text(input.payee,200)});
   return {id:after.id,entity:"document",after};
-}
-export async function cashCount(tx:Tx,input:Input,actor:Actor):Promise<Change>{
-  const accountId=await cashAccount(tx,input.accountId);
-  const actual=cents(input.amount);
-  const at=date(input.at);
-  const expected=(await tx.cashMovement.aggregate({where:{accountId,at:{lte:at}},_sum:{amount:true}}))._sum.amount ?? 0n;
-  const note=expected===actual ? text(input.note,1000) : needed(input.note,1000);
-  const after=await tx.cashCount.create({data:{accountId,actual,expected,note,at,actorId:actor.id}});
-  return {id:after.id,after};
 }
 export async function opening(tx:Tx,input:Input,actor:Actor):Promise<Change>{
   requireRule(!await tx.setting.findUnique({where:{key:"openingFinal"}}),"openingLocked");

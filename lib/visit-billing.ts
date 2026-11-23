@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import type { Tx } from "./db";
 import { document, snapshot, validParty, type LineData } from "./documents";
-import { cents, date, extended, needed, requireRule, units } from "./rules";
+import { cents, date, extended, needed, requireRule, today, units } from "./rules";
 import { payment } from "./cash";
 import { move } from "./stock";
 import type { Actor, Change } from "./transaction";
@@ -9,6 +9,7 @@ import type { Input } from "./masters";
 import { visitParts, visitWork, workshopIntake } from "./visit-items";
 import { parseMoney } from "./decimal-input";
 import { serviceName } from "./services";
+import { recordedDeliveryDate } from "./visits";
 
 async function billingSource(tx: Tx, input: Input) {
   const visit = await tx.document.findFirst({
@@ -22,7 +23,10 @@ async function billingSource(tx: Tx, input: Input) {
 async function billVisit(tx: Tx, actor: Actor, visit: Awaited<ReturnType<typeof billingSource>>["visit"], input: Input, at: Date) {
   const intake = workshopIntake(visit.metadata);
   requireRule(visit.kind === "visit" || intake, "invalidDocument");
-  requireRule(!intake || visit.status === "delivered" || visit.status === "ready" && intake.finishedAt, "finishBeforeBilling");
+  requireRule(!intake || visit.status === "delivered", "finishBeforeBilling");
+  const invoiceDay = today(at);
+  const serviceDay = recordedDeliveryDate(visit) || today(visit.at);
+  requireRule(invoiceDay >= serviceDay && invoiceDay <= today(), "invalidInvoiceDate");
   requireRule(input.visitVersion === undefined || input.visitVersion === visit.version, "stale", 409);
   const work = visitWork(visit);
   const prices = input.servicePrices;
@@ -86,10 +90,9 @@ export async function visitReceipt(tx: Tx, input: Input, actor: Actor): Promise<
   const at = date(input.at);
   if (existing) requireRule(input.servicePrices === undefined, "alreadyPosted", 409);
   const invoice = existing ?? await billVisit(tx, actor, visit, input, at);
-  requireRule(at >= invoice.at, "invalidDate");
   const paid = await payment(tx, {
-    kind: "receipt", partyId: visit.partyId, amount: input.amount, accountId: input.accountId, method: input.method, at: input.at,
-    note: input.note, allocations: [{ documentId: invoice.id, amount: input.amount }],
+    kind: "receipt", invoiceId: invoice.id, amount: input.amount, accountId: input.accountId, method: input.method, at: input.at,
+    note: input.note, cashTendered: input.cashTendered,
   }, actor);
   return { ...paid, after: { invoiceId: invoice.id, createdInvoice: !existing, payment: paid.after } };
 }

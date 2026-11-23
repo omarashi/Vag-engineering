@@ -368,7 +368,7 @@ model MoneyAccount {
   archived  Boolean @default(false)
   version   Int @default(0)
   movements CashMovement[]
-  counts    CashCount[]
+  counts    CashCount[] @ignore
 }
 model CashCount {
   id          String @id @default(cuid())
@@ -379,6 +379,8 @@ model CashCount {
   note        String
   at          DateTime @default(now())
   actorId     String
+
+  @@ignore
 }
 
 model Payment {
@@ -487,4 +489,3 @@ model Sequence {
   scope   String @id
   current Int
 }
-

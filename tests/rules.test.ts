@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { amountDue,cents,date,extended,today,units } from "../lib/rules";
+import { amountDue,cents,date,extended,today,unitAmount,units } from "../lib/rules";
 import { can } from "../lib/permissions";
 import { signature } from "../lib/storage";
 
@@ -8,6 +8,9 @@ test("EGP parsing and half-up line rounding use minor units",()=>{
   assert.equal(cents("١٢٣٫٤٥"),12345n);
   assert.equal(extended(units("0.005"),100n),1n);
   assert.equal(extended(units("2.375"),1999n),4748n);
+  assert.equal(extended(units("-1.5",true),1n),-2n);
+  assert.equal(unitAmount(5n,units("2")),3n);
+  assert.equal(unitAmount(5n,units("0.125")),40n);
   assert.equal(amountDue(1000000n,600000n,0n),400000n);
   assert.throws(()=>cents("1.005"));
 });

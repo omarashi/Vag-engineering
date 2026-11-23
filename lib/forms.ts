@@ -1,11 +1,13 @@
 import type { ActionSpec, Field, Option } from "@/components/backoffice-form";
 import { day, label, moneyInput, type Language } from "./locale";
+import { demoPartNamesArabic } from "./egyptian";
 import type { selections } from "./views";
-import { today } from "./rules";
+import { moneyAccountKinds, today } from "./rules";
 import { prefixes } from "./transaction";
 import type { Actor } from "./transaction";
 import { can } from "./permissions";
 import { carName } from "./car-name";
+import { jobStates } from "./workshop";
 
 export type Choices=Awaited<ReturnType<typeof selections>>;
 type Row=Record<string,unknown>;
@@ -24,8 +26,14 @@ export function forms(lang:Language,data:Choices,actor:Actor){
   const enumeration=(keys:readonly string[])=>keys.map((value)=>({value,name:label(lang,value)}));
   const customer=idOptions(data.customers),supplier=idOptions(data.suppliers),staff=idOptions(data.staff),accounts=idOptions(data.accounts);
   const catalogue=(group:string)=>data.catalogue.filter((item)=>item.group===group).map((item)=>({value:item.name,name:item.name,price:moneyInput(item.price)}));
+  const paymentMethods=[...enumeration(["cash","bank","card","transfer"]),...catalogue("paymentMethod")]
+    .filter((item,index,all)=>all.findIndex((prior)=>prior.value===item.value)===index);
   const cars=data.cars.map((item)=>({value:item.id,related:item.partyId,name:[carName(item),item.plate].filter(Boolean).join(" · ")}));
-  const parts=data.stock.map((item)=>({value:item.id,name:item.code+" · "+item.name,price:moneyInput(item.price),cost:moneyInput(item.cost),version:item.version}));
+  const stockOptions=(localizeDemoNames=false)=>data.stock.map((item)=>{
+    const name=localizeDemoNames && item.code.startsWith("DEMO-") ? demoPartNamesArabic[item.name] ?? item.name : item.name;
+    return {value:item.id,name:item.code+" · "+name,price:moneyInput(item.price),cost:moneyInput(item.cost),version:item.version};
+  });
+  const parts=stockOptions();
   const destinations=data.payables.map((item)=>({value:item.id,name:item.number+" · "+label(lang,item.kind)+" · "+moneyInput(item.total),
     related:[item.partyId ?? "",item.employeeId ?? "",item.kind].join("|")}));
   const jobs=data.work.map((item)=>({value:item.id,name:item.number+" · "+item.title,related:item.partyId ?? ""}));
@@ -66,11 +74,11 @@ export function forms(lang:Language,data:Choices,actor:Actor){
       choose("paidDaysPerWeek","Paid days per week",[1,2,3,4,5,6,7].map(day=>({value:String(day),name:String(day)})),true,str(row,"paidDaysPerWeek")||"6"),
       m("rate","Rate",row),
       when("effectiveAt","Effective date",dated(row,"effectiveAt")||today()),when("startedAt","Start date",dated(row,"startedAt")||today()),
-      ...(!row.dismissalReason?[when("endedAt","End date",dated(row,"endedAt")),check("archived","Archived",row.archived===true)]:[]),
+      ...(can(actor.role,"employeeDismiss")&&!row.dismissalReason?[when("endedAt","End date",dated(row,"endedAt")),check("archived","Archived",row.archived===true)]:[]),
       memo("note","Notes",str(row,"note")),
     ],row,"/payroll/$id"),
-    account:(row:Row={})=>edit("account",row.id?"Edit":"Add account",[
-      txt("name","Name",true,str(row,"name")),choose("kind","Account type",enumeration(["cash","bank"]),true,str(row,"kind")||"cash"),
+    account:(row:Row={})=>edit("account",row.id?"Edit account":"Add account",[
+      txt("name","Name",true,str(row,"name")),choose("kind","Account type",enumeration(moneyAccountKinds),true,str(row,"kind")||"cash"),
       check("archived","Archived",row.archived===true),
     ],row),
     catalogue:(row:Row={})=>edit("catalogue",row.id?"Edit":"Add catalogue item",[
@@ -79,15 +87,20 @@ export function forms(lang:Language,data:Choices,actor:Actor){
     ],row),
     settings:(row:Row,custom:Record<string,string>)=>({...edit("settings","Business settings",[
       txt("name","Business name",true,str(row,"name")||"VAG Engineering"),txt("phone","Phone",false,str(row,"phone"),true),
+      check("workshopPhotos","Enable workshop photos",row.workshopPhotos===true),
       txt("address","Address",false,str(row,"address")),txt("logo","Logo path",false,str(row,"logo")||"/brand.jpg",true),
       choose("dateFormat","Date format",enumeration(["short","medium","long"]),true,str(row,"dateFormat")||"medium"),
       memo("footer","Invoice footer",str(row,"footer")),...Object.entries(prefixes).filter(([kind])=>kind!=="appointment").map(([kind,defaultPrefix])=>txt("prefix-"+kind,label(lang,kind),false,custom[kind]||defaultPrefix,true)),
     ]),hidden:{version:row.version ?? 0}}),
-    user:(row:Row={})=>edit("user",row.id?"Edit":"Add user",[
-      txt("name","Display name",true,str(row,"name")),{...txt("email","Email",true,str(row,"email"),true),type:"email"},
-      choose("role","Role",enumeration(["owner","accountant","technician"]),true,str(row,"role")||"technician"),
-      {...txt("password","New password",!row.id),type:"password"},check("active","Active account",row.active!==false),
-    ],row),
+    user:(row:Row={},protectOwner=false)=>{
+      const spec=edit("user",row.id?"Edit login":"Add user",[
+        txt("name","Display name",true,str(row,"name")),{...txt("email","Email",true,str(row,"email"),true),type:"email"},
+        ...(!protectOwner?[choose("role","Role",enumeration(["owner","accountant","technician"]),true,str(row,"role")||"technician")]:[]),
+        {...txt("password",row.id?"New password (optional)":"New password",!row.id),type:"password"},
+        ...(!protectOwner?[check("active","Active account",row.active!==false)]:[]),
+      ],row);
+      return protectOwner?{...spec,hidden:{...spec.hidden,role:"owner",active:true}}:spec;
+    },
     appointment:(row:Row={})=>{
       const at=row.at?new Intl.DateTimeFormat("sv-SE",{timeZone:"Africa/Cairo",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}).format(new Date(str(row,"at"))).replace(" ","T"):today()+"T09:00";
       return edit("appointment",row.id?"Edit":"Book appointment",[
@@ -104,7 +117,7 @@ export function forms(lang:Language,data:Choices,actor:Actor){
       ...(!source?[staffField()]:[]),memo("requested","Complaint / requested work"),memo("note","Notes",source?str(source,"note"):""),memo("reason","Reason or approval"),
     ],{},"/jobs/$id"),hidden:source?{sourceId:source.id}:undefined}),
     jobUpdate:(row:Row)=>edit("jobUpdate","Update job",[
-      choose("status","Status",enumeration(["new","inspecting","awaitingApproval","approved","inProgress","waitingParts","ready","delivered","cancelled"]),true,str(row,"status")),
+      choose("status","Status",enumeration(jobStates),true,str(row,"status")),
       txt("stage","Tuning stage"),memo("note","Notes",str(row,"note")),memo("inspection","Inspection",value(metadata(row),"inspection")),
       memo("work","Work notes",value(metadata(row),"work")),memo("ecu","ECU notes",value(metadata(row),"ecu")),memo("tcu","TCU notes",value(metadata(row),"tcu")),
       txt("dynoBefore","Dyno before",false,value(metadata(row),"dynoBefore")),txt("dynoAfter","Dyno after",false,value(metadata(row),"dynoAfter")),
@@ -112,16 +125,15 @@ export function forms(lang:Language,data:Choices,actor:Actor){
     ],row),
     assign:(row:Row)=>edit("jobAssignment","Assign technicians",[staffField("employees","Technicians",staffIds(row)),staffField("completed","Completed technicians",staffIds(row,true))],row),
     jobStock:(row:Row)=>post("jobStock","Stock movement",[
-      choose("kind","Type",enumeration(["reserve","release","issue","jobReturn"]),true,"reserve"),choose("partId","Part",parts,true),
+      choose("kind","Type",enumeration(["reserve","release","issue","jobReturn"]),true,can(actor.role,"payment")?"reserve":"issue"),
+      choose("partId","Part",parts.map(({value,name})=>({value,name})),true),
       txt("quantity","Quantity",true,"1",true),memo("reason","Reason"),
     ],{jobId:row.id}),
     stock:(row?:Row,opening=false)=>post("stock",opening?"Record opening stock":"Adjustment or count",[
       choose("partId","Part",parts,true,row?str(row,"id"):""),...(!opening?[choose("kind","Type",enumeration(["adjustment","count"]),true,"adjustment")]:[m("cost","Cost",{},true)]),
       txt("quantity","Quantity",true,"",true),when(),memo("reason","Reason","",true),
     ],opening?{kind:"opening"}:{}),
-    invoice:(row?:Row):ActionSpec=>{
-      if(!row) return {...post("invoice","Counter sale",[choose("partyId","Customer",customer,true),choose("vehicleId","Vehicle",cars,false,"","partyId"),...dateFields(),memo("note","Notes")],{},"/record/$id"),
-        editor:"lines",parts,onlyParts:true};
+    invoice:(row:Row):ActionSpec=>{
       const stock = (row.jobStock ?? []) as {issued:string;part:{id:string;code:string;name:string;price:string}}[];
       const issuedParts = stock.filter(({issued})=>Number(issued)>0).map(({part,issued})=>({
         value:part.id,name:part.code+" · "+part.name,price:moneyInput(part.price),quantity:issued,
@@ -136,9 +148,10 @@ export function forms(lang:Language,data:Choices,actor:Actor){
     },
     purchase:(kind:"purchase"|"purchaseOrder",row?:Row)=>({...post(kind,row?"Receive order":kind==="purchase"?"New purchase":"New purchase order",[
       ...(!row?[choose("partyId","Supplier",supplier,true)]:[]),...(kind==="purchase"?[txt("reference","Reference",true)]:[]),...dateFields(),memo("note","Notes"),
-    ],row?{sourceId:row.id}:{},"/record/$id"),editor:row?undefined:"lines" as const,parts,onlyParts:true,purchase:true}),
+    ],row?{sourceId:row.id}:{},"/record/$id"),editor:row?undefined:"lines" as const,
+      parts:kind==="purchase" && !row && lang==="ar" ? stockOptions(true) : parts,onlyParts:true,purchase:true}),
     expense:()=>post("expense","New expense",[txt("title","Title",true),catalogue("expenseCategory").length?choose("category","Category",catalogue("expenseCategory"),true):txt("category","Category",true),
-      txt("payee","Payee"),m("amount","Amount",{},true),...dateFields(),memo("note","Notes")],{},"/record/$id"),
+      txt("payee","Payee"),m("amount","Amount",{},true),when(),memo("note","Notes")],{},"/record/$id"),
     credit:(row:Row)=>({...post("credit","Add credit / return",[when(),m("amount","Amount"),memo("reason","Reason","",true)],{sourceId:row.id},"/record/$id"),
       editor:"returns" as const,purchase:["purchase","supplierOpening"].includes(str(row,"kind")),
       options:((row.lines ?? []) as {id:string;description:string;quantity:string}[]).map((line)=>({value:line.id,name:line.description+" · "+line.quantity})),
@@ -151,19 +164,23 @@ export function forms(lang:Language,data:Choices,actor:Actor){
         const picker=kind==="receipt"||kind==="refund"?customer:kind==="supplierPayment"||kind==="supplierRefund"?supplier:null;
         const filtered=[...(picker?[choose("partyId",picker===customer?"Customer":"Supplier",picker,true,str(row ?? job ?? {},"partyId"))]:[]),
           ...(["advance","salaryPayment"].includes(kind)?[choose("employeeId","Employee",staff,true,str(row ?? {},"employeeId"))]:[]),
-          ...(kind==="transfer"?[choose("toAccountId","Destination account",accounts,true)]:[]),
           ...(["receipt","supplierPayment"].includes(kind)?[check("allowCredit","Allow unallocated credit",Boolean(job))]:[]),
           ...(kind==="receipt"&&!job?[choose("jobId","Workshop jobs",jobs,false,"","partyId")]:[])];
         return filtered;
       };
-      const paymentKinds=["receipt","supplierPayment","refund","supplierRefund","expensePayment","salaryPayment","advance","transfer","contribution","withdrawal"];
-      const kind=opening?"cashOpening":job?"receipt":row?map[str(row,"kind")]:"receipt";
+      const paymentKinds=["supplierPayment","refund","supplierRefund","expensePayment","salaryPayment","advance"];
+      const kind=opening?"cashOpening":job||receiptOnly?"receipt":row?map[str(row,"kind")]:paymentKinds[0];
       const dynamic=Object.fromEntries(paymentKinds.map((key)=>[key,build(key)]));
-      const spec={...post("payment",opening?"Record opening cash":receiptOnly?"Record a receipt":"Record payment",[
+      const title=opening?"Record opening cash":receiptOnly?"Record a receipt":
+        ["refund","supplierRefund"].includes(kind)?"Record refund":"Record payment";
+      const spec={...post("payment",title,[
         ...(!row&&!job&&!opening&&!receiptOnly?[choose("kind","Type",enumeration(paymentKinds),true,kind)]:build(kind)),
         choose("accountId","Account",accounts,true),
-        choose("method","Payment method",[...enumeration(["cash","bank","card","transfer"]),...catalogue("paymentMethod")].filter((item,i,all)=>all.findIndex((prior)=>prior.value===item.value)===i),true,"cash"),
-        m("amount","Amount",{amount:row?.due},true),when(),memo("note","Notes","",opening||["refund","supplierRefund"].includes(kind)),
+        choose("method","Payment method",paymentMethods,true,"cash"),
+        m("amount",kind==="receipt"?"Amount to apply (EGP)":"Amount",{amount:row?.due},true),
+        ...(kind==="receipt"?[{...m("cashTendered","Cash handed over (EGP)"),inputMode:"decimal" as const,
+          depends:"method",showWhen:{key:"method",value:"cash"}}]:[]),
+        when(),memo("note","Notes","",opening||["refund","supplierRefund"].includes(kind)),
       ],{...(row||job||opening||receiptOnly?{kind}:{}),...(job?{jobId:job.id}:{})},"/payment/$id"),
         editor:opening?undefined:"allocations" as const,
         options:row?destinations.filter((item)=>item.value===row.id):destinations,dynamic:!row&&!job&&!opening&&!receiptOnly?dynamic:undefined,
@@ -175,7 +192,15 @@ export function forms(lang:Language,data:Choices,actor:Actor){
     allocate:(row:Row)=>({...post("allocate","Allocate credit or advance",[],{id:row.id}),editor:"allocations" as const,
       options:destinations.filter((item)=>{const [party,staff,kind]=(item.related ?? "").split("|"); return row.kind==="receipt"?party===row.partyId&&["invoice","customerOpening"].includes(kind):row.kind==="supplierPayment"?party===row.partyId&&["purchase","supplierOpening"].includes(kind):staff===row.employeeId&&["payroll","employeeOpening"].includes(kind);})}),
     unallocate:(id:string)=>post("unallocate","Unallocate",[memo("reason","Reason","",true)],{id}),
-    cashCount:()=>post("cashCount","Record cash count",[choose("accountId","Account",accounts,true),m("amount","Actual",{},true),when("at","Starts at (Cairo)",today()+"T18:00",true,"datetime-local"),memo("note","Reason")]),
+    cashMovement:(kind:"transfer"|"contribution"|"withdrawal")=>{
+      const title={transfer:"Transfer between accounts",contribution:"Record owner contribution",withdrawal:"Record owner withdrawal"}[kind];
+      return post("payment",title,[
+        choose("accountId",kind==="transfer"?"Source account":"Account",accounts,true),
+        kind==="transfer"?choose("toAccountId","Destination account",accounts,true):
+          choose("method","Payment method",paymentMethods,true,"cash"),
+        m("amount","Amount",{},true),when(),memo("note","Reason","",true),
+      ],{kind},"/payment/$id");
+    },
     opening:()=>({...post("opening","Add opening item",[
       choose("kind","Type",enumeration(["customerOpening","supplierOpening","employeeOpening","advanceOpening"]),true,"customerOpening"),
       txt("reference","Reference",true),m("amount","Amount",{},true),...dateFields(),memo("note","Notes"),

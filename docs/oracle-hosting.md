@@ -95,7 +95,7 @@ POSTGRES_PASSWORD=$(openssl rand -hex 32)
 BOOTSTRAP_EMAIL=owner@example.com
 BOOTSTRAP_NAME="Workshop Owner"
 VAG_DEMO=false
-BACKUP_KEEP=7
+BACKUP_KEEP=4
 EOF
 )
 ```
@@ -156,7 +156,7 @@ On Ubuntu run `sudo docker compose --profile operations run --rm restore RESTORE
 
 **A live database is one copy.** The following makes independent copies that include the authentication and financial records. Oracle may reclaim an idle free VM and provides no free-tier uptime guarantee. A daily snapshot can still leave up to a day of entries to reconcile. If losing a day’s receipts would be too costly, schedule more frequent backups and monitor storage. [Oracle free tier FAQ](https://www.oracle.com/cloud/free/faq/) · [Project backup and restore](operations.md)
 
-1. On Ubuntu, from `/srv/vag-erp`, run `sudo docker compose --profile operations run --rm backup`. Check for `backup complete`. The dated directory in `backups/` contains the PostgreSQL dump, attachment archive and checksums. With `BACKUP_KEEP=7` the script retains seven successful local runs.
+1. On Ubuntu, from `/srv/vag-erp`, run `sudo docker compose --profile operations run --rm backup`. Check for `backup complete`. The dated directory in `backups/` contains the PostgreSQL dump, attachment archive and checksums. The default `BACKUP_KEEP=4` retains four successful local runs.
 2. Pick independent, private backup storage. One practical option is a shop-controlled Google Drive with an **rclone encrypted remote**. On Ubuntu install `sudo apt install -y rclone`. Run `sudo rclone config`, create a `drive` remote named `shopdrive`, and authorize the shop’s backup account. On a server without a browser, follow rclone’s headless authorization instructions from a trusted PC. Create a second remote of type `crypt` named `shop-encrypted`, pointing to `shopdrive:WorkshopBackups`. Select filename encryption and save the encryption password, salt if used, and a protected copy of the rclone config outside Oracle. You will need them during recovery. [Google Drive setup](https://rclone.org/drive/) · [Remote authorization](https://rclone.org/remote_setup/) · [Encrypted backups](https://rclone.org/crypt/)
 3. Make and verify the first off-server copy. These commands run from `/srv/vag-erp`. `copy` retains older remote backups when the local rotation removes them. Set a separate remote retention policy or review usage regularly.
 

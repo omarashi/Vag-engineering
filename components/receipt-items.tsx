@@ -3,14 +3,14 @@ import { day, label, money, translate, type Language } from "@/lib/locale";
 import type { receiptDetails } from "@/lib/receipt-details";
 import { BillItems } from "./bill-items";
 
-type Details = Awaited<ReturnType<typeof receiptDetails>>;
+type Details = NonNullable<Awaited<ReturnType<typeof receiptDetails>>>;
 type Car = { make?: string; model?: string; plate?: string };
 
 export function ReceiptItems({ lang, details, print }: { lang: Language; details: Details; print?: boolean }) {
   const t = (key: string) => translate(lang, key);
   const amt = (amount: bigint) => <bdi>{money(lang, amount)}</bdi>;
   return <>
-    {details.bills.map(({ document, applied, released, atPayment, current }) => {
+    {details.bills.map(({ document, released }) => {
       const car = (document.snapshot as { vehicle?: Car } | null)?.vehicle;
       const carText = car && [car.make, car.model, car.plate].filter(Boolean).join(" · ");
       const number = <bdi>{document.number}</bdi>;
@@ -22,17 +22,13 @@ export function ReceiptItems({ lang, details, print }: { lang: Language; details
           {released && <p>{t("Allocation released")}</p>}
         </header>
         <div className={print ? undefined : "table-scroll"}><BillItems lang={lang} bill={document}/></div>
-        <dl className="receipt-bill-totals">
-          <div><dt>{t(document.kind === "invoice" ? "Invoice total" : "Total")}</dt><dd>{amt(document.total)}</dd></div>
-          <div><dt>{t("Applied from this payment")}</dt><dd>{amt(applied)}</dd></div>
-          {atPayment !== null && <div><dt>{t("Balance after this payment")}</dt><dd>{amt(atPayment)}</dd></div>}
-          {current !== null && <div><dt>{t("Current balance")}</dt><dd>{amt(current)}</dd></div>}
-        </dl>
         {document.note && <p className="receipt-bill-note"><bdi>{document.note}</bdi></p>}
       </section>;
     })}
-    {details.customerDebtAfter !== null && <p className="receipt-customer-total">
-      <strong>{t("Customer balance after payment")}</strong> {amt(details.customerDebtAfter)}
-    </p>}
+    <dl className="receipt-totals">
+      <div><dt>{t("Total")}</dt><dd>{amt(details.total)}</dd></div>
+      <div><dt>{t("Paid")}</dt><dd>{amt(details.paid)}</dd></div>
+      <div><dt>{t("Change given")}</dt><dd>{details.changeGiven === null ? "—" : amt(details.changeGiven)}</dd></div>
+    </dl>
   </>;
 }

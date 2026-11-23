@@ -26,7 +26,7 @@ async function main() {
     console.log("Initial owner created.");
     return;
   }
-  const password = "Demo-Workshop-2026!";
+  const password = process.env.VAG_DEMO_PASSWORD || "Demo-Workshop-2026!";
   const actor = await createAccount("owner@vag-demo.test", "Omar Khaled", "owner", password);
   await createAccount("accountant@vag-demo.test", "Mariam Adel", "accountant", password);
   await createAccount("technician@vag-demo.test", "Youssef Nabil", "technician", password);
