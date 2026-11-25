@@ -9,14 +9,15 @@ import { day, label, money, translate, type Language } from "@/lib/locale";
 import type { Filters } from "@/lib/views";
 import type { Forms } from "@/lib/forms";
 import { serviceName, serviceTypes } from "@/lib/services";
+import { accountName } from "@/lib/payment-options";
 import { carName } from "@/lib/car-name";
 import { jobModeLabel, visitTitle, workshopIntake } from "@/lib/visit-items";
 
 export type Cell=ReactNode;
 export function Ref({href,children}:{href:string;children:ReactNode}) { return <Link href={href} className="id-link"><bdi>{children}</bdi></Link>; }
 export function Amt({lang,value}:{lang:Language;value:string|bigint|number|null|undefined}) {return value==null?"—":<bdi>{money(lang,value)}</bdi>;}
-export function Register({lang,head,rows}:{lang:Language;head:string[];rows:Cell[][]}){
-  return rows.length?<div className="table-scroll"><table><thead><tr>{head.map((name,index)=><th key={index} scope="col">{translate(lang,name)}</th>)}</tr></thead>
+export function Register({lang,head,rows,stickyKey=false}:{lang:Language;head:string[];rows:Cell[][];stickyKey?:boolean}){
+  return rows.length?<div className={"table-scroll"+(stickyKey?" table-sticky-key":"")} tabIndex={0} role="region" aria-label={translate(lang,"Table")}><table><thead><tr>{head.map((name,index)=><th key={index} scope="col">{translate(lang,name)}</th>)}</tr></thead>
     <tbody>{rows.map((row,index)=><tr key={index}>{row.map((cell,idx)=><td key={idx}>{cell ?? "—"}</td>)}</tr>)}</tbody></table></div>:<Empty lang={lang}/>;
 }
 export function Heading({lang,title,description,children}:{lang:Language;title:string;description?:string;children?:ReactNode}){
@@ -35,8 +36,8 @@ export function Info({lang,title="Details",items}:{lang:Language;title?:string;i
   if(!values.length)return null;
   return <Panel title={translate(lang,title)}><div className="detail-grid">{values.map(([key,value],i)=><div className="detail-item" key={i}><small>{translate(lang,key)}</small><b>{typeof value==="string"?<bdi>{value}</bdi>:value}</b></div>)}</div></Panel>;
 }
-function dropdown(name:string,options:Option[],selected?:string){
-  return <select name={name} aria-label={name} defaultValue={selected ?? ""}><option value="">—</option>{options.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select>;
+function dropdown(name:string,caption:string,options:Option[],selected?:string){
+  return <select name={name} aria-label={caption} defaultValue={selected ?? ""}><option value="">—</option>{options.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select>;
 }
 export function Toolbar({lang,path,filters,dateRange=false,status,party,staff,category=false,workServices=false,report,paymentKinds}:{lang:Language;path:string;filters:Filters;dateRange?:boolean;status?:string[];party?:Option[];staff?:Option[];category?:boolean;workServices?:boolean;report?:string;paymentKinds?:PaymentKind[]}){
   const tr=(name:string)=>translate(lang,name);
@@ -44,8 +45,8 @@ export function Toolbar({lang,path,filters,dateRange=false,status,party,staff,ca
     {report&&<input type="hidden" name="report" value={report}/>}
     <label className="search-box"><Search size={16}/><input aria-label={tr("Search")} name="q" defaultValue={filters.q} placeholder={tr("Search records")}/></label>
     {dateRange&&<><input aria-label={tr("From")} type="date" name="from" defaultValue={filters.from}/><input aria-label={tr("To")} type="date" name="to" defaultValue={filters.to}/></>}
-    {status&&dropdown("status",status.map((value)=>({value,name:value==="archived"?tr("Archived"):value==="active"?tr("Open"):label(lang,value)})),filters.status)}
-    {party&&dropdown("party",party,filters.party)}{staff&&dropdown("staff",staff,filters.staff)}
+    {status&&dropdown("status",tr("Status"),status.map((value)=>({value,name:value==="archived"?tr("Archived"):value==="active"?tr("Open"):label(lang,value)})),filters.status)}
+    {party&&dropdown("party",tr("Party"),party,filters.party)}{staff&&dropdown("staff",tr("Employee"),staff,filters.staff)}
     {paymentKinds&&<select name="paymentKind" aria-label={tr("Payment type")} defaultValue={filters.paymentKind ?? ""}>
       <option value="">{tr("All payment types")}</option>
       {paymentKinds.map((kind)=><option key={kind} value={kind}>{label(lang,kind)}</option>)}
@@ -90,10 +91,12 @@ export function DocRegister({lang,docs,mode="financial"}:{lang:Language;docs:Doc
     row.dueAt?<span className={BigInt(row.due ?? 0)>0n&&new Date(row.dueAt)<new Date()?"text-red-400":""}>{day(lang,row.dueAt)}{BigInt(row.due??0)>0n&&new Date(row.dueAt)<new Date()&&" · "+tr("Overdue")}</span>:"—",
   ])}/>;
 }
-type Pay={id:string;number:string;kind:string;at:Date;amount:bigint;party?:{name:string}|null;employee?:{name:string}|null;reversedAt:Date|null;method:string};
-export function PayRegister({lang,rows}:{lang:Language;rows:Pay[]}){
-  return <Register lang={lang} head={["Number","Type","Date","Name","Payment method","Amount","Status"]} rows={rows.map((row)=>[
+type Pay={id:string;number:string;kind:string;at:Date;amount:bigint;party?:{name:string}|null;employee?:{name:string}|null;
+  reversedAt:Date|null;method:string;movements?:{reversal:boolean;account:{name:string;code?:string|null}}[]};
+export function PayRegister({lang,rows,showAccounts=false}:{lang:Language;rows:Pay[];showAccounts?:boolean}){
+  return <Register lang={lang} head={["Number","Type","Date","Name","Payment method",...(showAccounts?["Accounts"]:[]),"Amount","Status"]} rows={rows.map((row)=>[
     <Ref href={"/payment/"+row.id}>{row.number}</Ref>,label(lang,row.kind),day(lang,row.at),<bdi>{row.party?.name || row.employee?.name}</bdi>,label(lang,row.method),
+    ...(showAccounts?[<bdi>{row.movements?.filter(item=>!item.reversal).map(item=>accountName(item.account)).join(" · ")}</bdi>]:[]),
     <Amt lang={lang} value={row.amount}/>,<Badge lang={lang} value={row.reversedAt?"reversed":"posted"}/>,
   ])}/>;
 }

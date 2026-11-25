@@ -3,12 +3,13 @@ import type { ActionSpec, Field, Option } from "@/components/action-form";
 import type { VisitPartOption } from "@/components/visit-parts-fields";
 import { money, moneyInput, translate, type Language } from "./locale";
 import { db } from "./db";
-import { serviceName, serviceTypes, visitServiceTypes } from "./services";
+import { selectableServices, serviceName, serviceTypes, visitServiceTypes } from "./services";
 import { jobModeLabel, jobModes, visitParts, visitWork, workshopIntake } from "./visit-items";
 import { today } from "./rules";
 import { recordedDeliveryDate } from "./visits";
 import { carName } from "./car-name";
 import { workshopPhotoLimit } from "./workshop-photo-limits";
+import { receiptDestinations } from "./payment-options";
 
 const field = (key: string, label: string, value = "", options: Partial<Field> = {}): Field => ({ key, label, value, ...options });
 const pick = (key: string, label: string, value: string, options: Option[], more: Partial<Field> = {}) =>
@@ -16,21 +17,14 @@ const pick = (key: string, label: string, value: string, options: Option[], more
 const version = (row?: { id: string; version: number }) => row ? { id: row.id, version: row.version } : {};
 
 export function receiptAccounts() {
-  return db.moneyAccount.findMany({ where: { archived: false }, orderBy: { name: "asc" }, select: { id: true, name: true, kind: true } });
+  return db.moneyAccount.findMany({ where: { archived: false }, orderBy: { name: "asc" }, select: { id: true, name: true, code: true, kind: true } });
 }
 
 export function receiptFields(lang: Language, accounts: Awaited<ReturnType<typeof receiptAccounts>>, quick = false): Field[] {
-  const cashAccounts = accounts.filter((account) => account.kind === "cash");
-  const initial = quick ? (cashAccounts.length === 1 ? cashAccounts[0] : undefined)
-    : accounts.length === 1 ? accounts[0] : cashAccounts[0];
-  const advanced = quick && Boolean(initial);
-  const methods = [["cash", "Cash"], ["card", "Card"], ["transfer", "Bank transfer"]];
+  const {options,initial}=receiptDestinations(lang,accounts);
   return [
-    field("amount", "Amount to apply (EGP)", "", { inputMode: "decimal", ltr: true, required: true, autoFocus: quick }),
-    field("cashTendered", "Cash handed over (EGP)", "", { inputMode: "decimal", ltr: true, depends: "method", showWhen: { key: "method", value: "cash" } }),
-    pick("method", "Payment method", !cashAccounts.length ? "transfer" : "cash",
-      methods.map(([value, name]) => ({ value, name: translate(lang, name) })), { advanced }),
-    pick("accountId", "Money received in", initial?.id ?? "", accounts.map(({ id, name }) => ({ value: id, name })), { advanced }),
+    pick("receiptDestination", "Receive payment via", initial, options, { wide:true }),
+    field("amount", "Amount paid (EGP)", "", { inputMode:"decimal", ltr:true, required:true, autoFocus:quick }),
     field("at", "Payment date", today(), { type: "date", ltr: true, required: true, max: today(), advanced: true }),
     field("note", "Notes", "", { advanced: true, type: "textarea", wide: true }),
   ];
@@ -92,7 +86,7 @@ export function carForm({ row, customerId, customers, continueVisit = false }: {
     hidden: { ...version(row), ...(owner ? { partyId: owner } : {}) },
     fields: [
       ...(!owner ? [pick("partyId", "Customer", "", customers, { wide: true })] : []),
-      field("make", "Make", row?.make, { wide: true }),
+      field("make", "Brand", row?.make, { wide: true }),
       field("model", "Model", row?.model, { required: true }),
       field("color", "Color", row?.color),
       field("plate", "Plate number", row?.plate, { wide: true }),
@@ -113,7 +107,7 @@ export function carForm({ row, customerId, customers, continueVisit = false }: {
 
 export async function visitPartOptions(lang: Language) {
   const parts = await db.part.findMany({
-    where: { archived: false, onHand: { gt: db.part.fields.reserved } },
+    where: { archived: false, onHand: { gt: 0 } },
     orderBy: { code: "asc" },
     select: { id: true, code: true, name: true, price: true },
   });
@@ -161,18 +155,24 @@ export function jobProgressForm(row: Document, mayTakePayment: boolean, photoSlo
   };
 }
 
-export function jobForm(lang: Language, { row, customerId, carId, customers = [], cars = [], partOptions, receivers, mayTakePayment = false, photosEnabled = false }: {
+export function jobForm(lang: Language, { row, customerId, carId, customers = [], cars = [], partOptions, receivers = [], mayTakePayment = false, photosEnabled = false }: {
   row?: Document; customerId?: string; carId?: string; customers?: Option[]; cars?: Option[]; partOptions?: VisitPartOption[]; receivers?: string[];
   mayTakePayment?: boolean;
   photosEnabled?: boolean;
 } = {}): ActionSpec {
   const mileage = (row?.metadata as { mileage?: number } | undefined)?.mileage;
-  const serviceOptions = serviceTypes.map((value) => ({ value, name: serviceName(lang, value) }));
+  const savedServices = row ? visitServiceTypes(row) : [];
+  const choices = savedServices.includes("repair") ? serviceTypes : selectableServices;
+  const serviceOptions = choices.map((value) => ({ value, name: serviceName(lang, value) }));
   const selecting = !row && !carId;
   const parts = visitParts(row?.metadata);
   const existing = new Set(parts.map((part) => part.partId));
   const availableParts = new Set(partOptions?.map((part) => part.value));
   const intake = workshopIntake(row?.metadata);
+  const receiverOptions = receivers.map((name) => ({ value: name, name }));
+  if (intake?.receivedBy && !receiverOptions.some((option) => option.value === intake.receivedBy)) {
+    receiverOptions.unshift({ value: intake.receivedBy, name: intake.receivedBy });
+  }
   const legacy = row?.kind === "visit";
   const closed = row?.status === "delivered";
   const canChangeType = !legacy && !closed;
@@ -202,6 +202,7 @@ export function jobForm(lang: Language, { row, customerId, carId, customers = []
     ...(selecting ? { relatedLink: { field: "vehicleId", owner: "partyId", href: "/customers/$id?new=vehicle&next=job", label: "Add a car for this customer" } } : {}),
     fields: [
       ...(selecting && !customerId ? [pick("partyId", "Customer", "", customers, {
+        type: "searchSelect", searchPlaceholder: "Search by customer name or phone",
         helpLink: { href: newCustomerForJob, label: newCustomerLabel },
       })] : []),
       ...(selecting ? [pick("vehicleId", "Car", "", cars, { depends: "partyId" })] : []),
@@ -214,14 +215,14 @@ export function jobForm(lang: Language, { row, customerId, carId, customers = []
           })),
         })] : []),
         field("receivedBy", "Received by", intake?.receivedBy, {
-          required: true, suggestions: receivers, placeholder: "Worker’s name",
+          required: true, type: "select", options: receiverOptions,
         }),
       ] : []),
       field("at", "Date received", today(row?.at), { type: "date", required: true, ltr: true, max: today() }),
       ...(row && closed && intake?.jobMode === "stay" ? [field("deliveryDate", "Delivery date", recordedDeliveryDate(row), {
         type: "date", ltr: true, minFrom: "at", max: today(), required: true,
       })] : []),
-      { key: "services", label: "Services", type: "checkboxes", withDetails: true, required: true, wide: true, options: serviceOptions, value: row ? visitServiceTypes(row) : [] },
+      { key: "services", label: "Services", type: "checkboxes", withDetails: true, required: true, wide: true, options: serviceOptions, value: savedServices },
       field("note", "Notes", row?.note, { type: "textarea", wide: true }),
       field("mileage", "Odometer (km)", String(mileage ?? ""), { advanced: true, ltr: true, inputMode: "numeric" }),
     ],

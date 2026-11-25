@@ -10,10 +10,12 @@ export type VisitInvoicePricing = {
   parts: (VisitPart & { lineTotal: string })[];
 };
 
-export function VisitInvoiceFields({ lang, pricing, prices, onChange }: {
+export function VisitInvoiceFields({ lang, pricing, prices, discount, onDiscountChange, onChange }: {
   lang: Language;
   pricing: VisitInvoicePricing;
   prices: Record<string, string>;
+  discount: string;
+  onDiscountChange: (discount: string) => void;
   onChange: (prices: Record<string, string>) => void;
 }) {
   const t = (key: string) => translate(lang, key);
@@ -22,6 +24,9 @@ export function VisitInvoiceFields({ lang, pricing, prices, onChange }: {
     return sum + (price !== null && price >= 0n ? price : 0n);
   }, 0n);
   const partsSubtotal = pricing.parts.reduce((sum, item) => sum + BigInt(item.lineTotal), 0n);
+  const subtotal = servicesSubtotal + partsSubtotal;
+  const reduction = parseMoney(discount.trim() || "0");
+  const net = reduction !== null && reduction >= 0n && reduction <= subtotal ? subtotal - reduction : null;
   const quantity = new Intl.NumberFormat(lang === "ar" ? "ar-EG" : "en-GB", { maximumFractionDigits: 3 });
 
   return <div className="invoice-pricing">
@@ -46,9 +51,14 @@ export function VisitInvoiceFields({ lang, pricing, prices, onChange }: {
         <strong><bdi>{money(lang, item.lineTotal)}</bdi></strong>
       </li>)}</ul>
     </section>}
+    <label className="invoice-price-row">
+      <span>{t("Discount (EGP)")}</span>
+      <input name="invoiceDiscount" dir="ltr" inputMode="decimal" maxLength={24}
+        aria-invalid={net===null} value={discount} onChange={(event)=>onDiscountChange(event.target.value)}/>
+    </label>
     <div className="invoice-price-row invoice-price-total">
       <strong>{t("Invoice total")}</strong>
-      <output aria-label={t("Invoice total")}><bdi>{money(lang, servicesSubtotal + partsSubtotal)}</bdi></output>
+      <output aria-label={t("Invoice total")}><bdi>{net===null ? "—" : money(lang,net)}</bdi></output>
     </div>
   </div>;
 }

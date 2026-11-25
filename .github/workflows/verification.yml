@@ -1,0 +1,66 @@
+name: Verify workshop
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: ephemeral-ci-postgres
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+      BETTER_AUTH_URL: http://127.0.0.1:3000
+      BETTER_AUTH_SECRET: ci-build-only-secret-with-32-characters
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run db:generate
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:workflows
+        env:
+          TEST_DATABASE_ADMIN_URL: postgresql://postgres:ephemeral-ci-postgres@127.0.0.1:${{ job.services.postgres.ports[5432] }}/postgres
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-test-results
+          path: test-results
+          if-no-files-found: ignore
+
+  compose:
+    runs-on: ubuntu-latest
+    env:
+      BETTER_AUTH_URL: http://127.0.0.1:3000
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start the isolated Compose stack
+        run: |
+          echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" >> "$GITHUB_ENV"
+          echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+      - run: docker compose config --quiet
+      - run: docker compose up --build --wait --wait-timeout 120
+      - run: curl --fail http://127.0.0.1:3000/api/health
+      - run: docker compose --profile operations run --rm backup
+      - if: failure()
+        run: docker compose logs --tail 100
+      - if: always()
+        run: docker compose down --volumes

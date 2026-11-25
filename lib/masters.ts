@@ -34,7 +34,7 @@ export async function vehicle(tx: Tx, input: Input, actor: Actor): Promise<Chang
   const owner = await tx.party.findFirst({where:{id:partyId,kind:"customer",archived:false}});
   requireRule(owner || before?.partyId === partyId, "partyMismatch");
   if (before && before.partyId !== partyId) needed(input.reason, 800);
-  const vin = normalize(input.vin).toUpperCase() || null;
+  const vin = normalize(text(input.vin, 32)).toUpperCase() || null;
   requireRule(!vin || /^[A-HJ-NPR-Z0-9]{17}$/.test(vin), "invalidVin");
   const mileage = input.mileage === "" || input.mileage == null ? null : integer(input.mileage, 0, 9999999);
   const highest = before ? await tx.vehicleEvent.findFirst({where:{vehicleId:before.id,kind:"mileage"},orderBy:{at:"desc"}}) : null;
@@ -102,7 +102,8 @@ export async function account(tx: Tx,input: Input): Promise<Change> {
   const id=text(input.id,120);
   const before=id ? await tx.moneyAccount.findUnique({where:{id}}) : null;
   checkVersion(before,input);
-  const data={name:needed(input.name),kind:choice(input.kind,moneyAccountKinds),archived:input.archived===true};
+  const code=input.code===undefined ? before?.code ?? null : text(input.code,16).toUpperCase() || null;
+  const data={name:needed(input.name),code,kind:choice(input.kind,moneyAccountKinds),archived:input.archived===true};
   const after=id ? await tx.moneyAccount.update({where:{id},data:{...data,version:{increment:1}}}) : await tx.moneyAccount.create({data});
   return {id:after.id,before,after};
 }

@@ -14,7 +14,7 @@ export function Login({lang,theme,demo}:{lang:Language;theme:string;demo:boolean
     try{
       const response=await fetch("/api/auth/sign-in/email",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email,password,rememberMe:false})});
       if(!response.ok)throw Error();
-      window.location.assign("/jobs");
+      window.location.assign("/overview");
     }catch{setError(true);setWorking(false);}
   }
   return <main className="login-page">

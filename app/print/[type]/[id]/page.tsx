@@ -9,10 +9,11 @@ import { PrintButton } from "@/components/print-button";
 import { BillItems, DocumentTable as Grid } from "@/components/bill-items";
 import { ReceiptItems } from "@/components/receipt-items";
 import { receiptDetails } from "@/lib/receipt-details";
+import { carName } from "@/lib/car-name";
 import { can } from "@/lib/permissions";
 
 type Snapshot={business?:{name:string;phone?:string;address?:string;footer?:string;logo?:string;dateFormat?:"short"|"medium"|"long"};
-  party?:{name:string;phone?:string;address?:string};employee?:{name:string;phone?:string};vehicle?:{plate?:string;make?:string;model?:string}};
+  party?:{name:string;phone?:string;address?:string};employee?:{name:string;phone?:string};vehicle?:{plate?:string;make?:string;model?:string;color?:string}};
 export default async function Page({params,searchParams}:{params:Promise<{type:string;id:string}>;searchParams:Promise<{lang?:string}>}){
   const [{type,id},query,request]=await Promise.all([params,searchParams,headers()]);
   const actor=await currentUser(request);
@@ -56,7 +57,7 @@ export default async function Page({params,searchParams}:{params:Promise<{type:s
         {receipt ? <>
           <div className="receipt-print-identity">
             <Image className={"receipt-print-logo"+(receiptLogo==="/receipt-logo.png"?" receipt-print-default-logo":"")} src={receiptLogo} alt={business.name}
-              width={610} height={409} loading="eager" unoptimized/>
+              width={669} height={373} loading="eager" unoptimized/>
             {businessDetails}
           </div>
           <div className="receipt-print-reference">{reference}</div>
@@ -70,7 +71,7 @@ export default async function Page({params,searchParams}:{params:Promise<{type:s
         {name&&<p>{tr("Name")} <bdi>{name}</bdi></p>}
         {(snap.party?.phone||snap.employee?.phone||account?.party.phone)&&<p>{tr("Phone")} <bdi>{snap.party?.phone ?? snap.employee?.phone ?? account?.party.phone}</bdi></p>}
         {snap.party?.address&&<p>{tr("Address")} <bdi>{snap.party.address}</bdi></p>}
-        {snap.vehicle&&!receipt?.bills.length&&<p>{tr("Vehicle")} <bdi>{[snap.vehicle.make,snap.vehicle.model,snap.vehicle.plate].filter(Boolean).join(" · ")}</bdi></p>}
+        {snap.vehicle&&!receipt?.bills.length&&<p>{tr("Vehicle")} <bdi>{[carName(snap.vehicle),snap.vehicle.plate].filter(Boolean).join(" · ")}</bdi></p>}
         {doc?.dueAt&&<p>{tr("Due date")} <bdi>{format(doc.dueAt)}</bdi></p>}
       </div>
       {doc&&<>
@@ -87,7 +88,7 @@ export default async function Page({params,searchParams}:{params:Promise<{type:s
       </>}
       {pay&&<>
         <p>{tr("Payment method")} <bdi>{label(lang,pay.method)}</bdi></p>
-        <p>{tr("Account")} <bdi>{pay.movements.filter((row)=>!row.reversal).map((row)=>row.account.name).join(" · ")}</bdi></p>
+        {!receipt&&<p>{tr("Account")} <bdi>{pay.movements.filter((row)=>!row.reversal).map((row)=>row.account.name).join(" · ")}</bdi></p>}
         {!receipt&&<p><strong>{tr("Amount")}</strong> <bdi>{amt(pay.amount)}</bdi></p>}
         {receipt&&<ReceiptItems lang={lang} details={receipt} print/>}
         {!receipt?.bills.length&&pay.allocations.length>0&&<Grid lang={lang} headers={["Document","Amount","Status"]} rows={pay.allocations.map((row)=>[

@@ -50,7 +50,7 @@ export async function jobStock(tx: Tx, input: Input, actor: Actor): Promise<Chan
   requireRule(job && !workshopIntake(job.metadata),"invalidJob");
   requireRule(!(await tx.document.findFirst({where:{kind:"invoice",sourceId:documentId,status:"posted"}})),"alreadyPosted",409);
   const partId=needed(input.partId);
-  const kind=choice(input.kind,["reserve","release","issue","jobReturn"] as const);
+  const kind=choice(input.kind,["issue","jobReturn"] as const);
   const amount=units(input.quantity);
   const match={documentId,partId};
   const previous=await tx.jobStock.findUnique({where:{documentId_partId:match}});
@@ -60,11 +60,6 @@ export async function jobStock(tx: Tx, input: Input, actor: Actor): Promise<Chan
   let reserve=zero;
   let quantity=zero;
   const reason=text(input.reason,800);
-  if (kind==="reserve") reserve=amount;
-  if (kind==="release") {
-    requireRule(priorReserved.gte(amount),"stockConflict",409);
-    reserve=amount.negated();
-  }
   if (kind==="issue") {
     const release=Prisma.Decimal.min(amount,priorReserved);
     reserve=release.negated();

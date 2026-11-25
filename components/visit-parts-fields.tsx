@@ -22,9 +22,10 @@ export function VisitPartsFields({ lang, options, parts, onChange, priceDetails,
   const available = inStock.filter((option) => !chosen.has(option.value));
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const showResults = browsing || terms.length > 0;
+  const normalize = (value: string) => value.replace(/[\s\-_]/g, "").toLowerCase();
   const matches = showResults ? available.filter((option) => {
-    const nameAndCode = (option.name + " " + option.code).toLowerCase();
-    return terms.every((term) => nameAndCode.includes(term));
+    const nameAndCode = normalize(option.name + " " + option.code);
+    return terms.every((term) => nameAndCode.includes(normalize(term)));
   }) : [];
 
   function addPart(option: VisitPartOption) {

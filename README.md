@@ -34,7 +34,9 @@ The full ERP source and a verified database and attachments snapshot are in the 
 
 ## Verification
 
-Run `npm run check`, `npm test` and `npm run build`. For workflow checks, set `TEST_URL` to an isolated demo instance and `DATABASE_URL` to its PostgreSQL database with a name ending in `_test`. Run `npm run test:acceptance` for workshop flows, `npm run test:roles` for access and handoff, or `node --env-file=.env tests/receipts.mjs` for transactional receipt checks. These suites create test records.
+Run `npm run check`, `npm test` and `npm run build`. Set `TEST_DATABASE_ADMIN_URL` to a loopback PostgreSQL connection with `CREATEDB`, then run `npm run test:workflows`. The runner creates and removes a fresh UTF-8 database and attachment directory for each suite. Pass a suite name after `--` to run it separately.
 
-Install Playwright Core with `npm install --prefix ./data/tooling --no-audit --no-fund playwright-core` for `node tests/browser.mjs` and `npm run test:photos`. Set `VAG_EDGE_PATH` to the Microsoft Edge executable if it is installed outside the default Windows location.
+The browser suites use Microsoft Edge on Windows when it is available. Set `VAG_EDGE_PATH` for another Edge installation, or install Chromium with `npx playwright install --with-deps chromium` on Linux. The CI workflow runs all suites with Chromium.
+
+To run individual suites against a demo you already started, set `TEST_URL` and point `DATABASE_URL` to its isolated database ending in `_test`. The suites write test records. Check cashbook, payroll and inventory with `npm run test:accountant`, workshop flows with `npm run test:acceptance`, roles with `npm run test:roles`, or photos with `npm run test:photos`. See [verification](docs/verification.md) for the release checks.
 

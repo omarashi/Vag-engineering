@@ -28,7 +28,7 @@ import { Badge, ButtonLink, Empty, Panel } from "./ui";
 export type LogQuery = { q: string; action: string; page: number; continueVisit: boolean };
 type Props = { lang: Language; query: LogQuery };
 type Visit = Awaited<ReturnType<typeof visitList>>[number];
-type Customer = { id: string; name: string; phone: string; _count: { vehicles: number } };
+type Customer = Awaited<ReturnType<typeof customerResults>>[number];
 type Car = { id: string; make: string; model: string; color: string; plate: string; year?: number | null; party?: { name: string } };
 const pageSize = 24;
 
@@ -38,7 +38,12 @@ function customerResults(q = "", page = 0, take = pageSize) {
     where: { kind: "customer", archived: false, ...(q ? { OR: [
       { name: like }, { phone: like }, { vehicles: { some: { plate: like } } },
     ] } : {}) },
-    select: { id: true, name: true, phone: true, _count: { select: { vehicles: { where: { archived: false } } } } },
+    select: {
+      id: true, name: true, phone: true,
+      vehicles: { where: { archived: false }, select: { make: true, model: true, color: true },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 2 },
+      _count: { select: { vehicles: { where: { archived: false } } } },
+    },
     orderBy: q ? [{ name: "asc" }, { id: "asc" }] : [{ createdAt: "desc" }, { id: "desc" }],
     skip: page * take, take,
   });
@@ -103,6 +108,7 @@ function CustomerRows({ lang, rows }: { lang: Language; rows: Customer[] }) {
     <Link className="log-list-link" href={"/customers/" + row.id}>
       <span className="log-list-icon person"><bdi>{initials(row.name)}</bdi></span>
       <span className="log-row-main"><strong><bdi>{row.name}</bdi></strong>
+        {row.vehicles.length > 0 && <small><bdi>{row.vehicles.map(carName).filter(Boolean).join(" · ")}</bdi></small>}
         <small>{row.phone ? <bdi>{row.phone}</bdi> : translate(lang, "No phone number")}</small></span>
       <span className="log-row-extra">{new Intl.NumberFormat(lang === "ar" ? "ar-EG" : "en").format(row._count.vehicles)} <CarFront size={16}/></span>
       <ArrowRight className="log-direction" size={17}/>
@@ -335,7 +341,7 @@ export async function CarPage({ lang, query, id, role }: Props & { id: string; r
     <div className="log-stack">
       <Details lang={lang} items={[
         ["Customer", <Link href={"/customers/" + car.partyId}><bdi>{car.party.name}</bdi></Link>],
-        ["Model year", car.year], ["Odometer (km)", car.mileage], ["Tuning stage", car.stage], ["Notes", car.note],
+        ["Brand", car.make], ["Model year", car.year], ["Odometer (km)", car.mileage], ["Tuning stage", car.stage], ["Notes", car.note],
         ["VIN", car.vin], ["Engine code", car.engine], ["Transmission", car.transmission],
       ]}/>
       <Panel title={t("Service history")}><VisitRows lang={lang} rows={visits} scope="car"/></Panel>

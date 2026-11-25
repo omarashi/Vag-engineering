@@ -4,8 +4,10 @@ import { document, documentDates, snapshot, validParty } from "./documents";
 import { cents, choice, date, list, needed, requireRule, text, today } from "./rules";
 import { due, allocated } from "./trade";
 import { number, type Actor, type Change } from "./transaction";
-import type { Input } from "./masters";
+import { checkVersion, type Input } from "./masters";
 import { openCustomerDebts } from "./customer-debt";
+import { payrollLocked, pendingAbsencesForWeek, requirePayrollOpen } from "./payroll-rules";
+import { receiptMethods } from "./payment-options";
 
 const destinations: Partial<Record<PaymentKind, Document["kind"][]>>={
   receipt:["invoice","customerOpening"],supplierPayment:["purchase","supplierOpening"],
@@ -14,8 +16,9 @@ const destinations: Partial<Record<PaymentKind, Document["kind"][]>>={
 };
 async function cashAccount(tx:Tx,input:unknown){
   const id=needed(input);
-  requireRule(await tx.moneyAccount.findFirst({where:{id,archived:false}}),"invalidAccount");
-  return id;
+  const account=await tx.moneyAccount.findFirst({where:{id,archived:false},select:{id:true,kind:true}});
+  requireRule(account,"invalidAccount");
+  return account;
 }
 async function employeeId(tx:Tx,input:unknown){
   const id=needed(input);
@@ -34,6 +37,7 @@ async function addAllocations(tx:Tx,payment:Payment,rows:PreparedAllocation[],re
     const {documentId,amount}=row;
     const target=await tx.document.findUnique({where:{id:documentId}});
     requireRule(target && destinations[payment.kind]?.includes(target.kind) && target.status==="posted","invalidDocument");
+    requirePayrollOpen(target);
     requireRule(target.partyId===payment.partyId && target.employeeId===payment.employeeId,"partyMismatch");
     requireRule(!receivedOn || receivedOn>=today(target.at),"paymentBeforeInvoice");
     const before=await due(tx,target);
@@ -59,7 +63,14 @@ async function postPayment(tx:Tx,input:Input,actor:Actor,debt?:{allocations:Prep
   const signed=kind==="cashOpening";
   const amount=cents(input.amount,signed);
   requireRule(signed ? amount!==0n : amount>0n,"amountMismatch");
-  const accountId=await cashAccount(tx,input.accountId);
+  const combined=kind==="receipt" && input.receiptDestination!==undefined;
+  const destination=combined ? text(input.receiptDestination,160) : "";
+  const separator=destination.indexOf(":");
+  requireRule(!combined || separator>0 && separator<destination.length-1,"invalidAccount");
+  const requestedMethod=destination.slice(0,separator);
+  const account=await cashAccount(tx,combined ? destination.slice(separator+1) : input.accountId);
+  requireRule(!combined || receiptMethods(account.kind).includes(requestedMethod),"invalidAccount");
+  const accountId=account.id;
   const at=date(input.at);
   const receivedOn=kind==="receipt"?today(at):undefined;
   requireRule(!receivedOn || receivedOn<=today(),"futurePayment");
@@ -80,24 +91,18 @@ async function postPayment(tx:Tx,input:Input,actor:Actor,debt?:{allocations:Prep
   }
   const note=text(input.note,2000);
   if (["refund","supplierRefund","transfer","withdrawal","contribution","cashOpening"].includes(kind)) needed(note,2000);
-  const method=needed(input.method || (kind==="transfer" ? "transfer" : "cash"),80);
-  const tender=text(input.cashTendered,32);
-  const cashReceipt=kind==="receipt" && method==="cash";
-  requireRule(!tender || cashReceipt,"invalidCashTendered");
-  const cashTendered=cashReceipt ? tender ? cents(tender) : amount : null;
-  requireRule(cashTendered===null || cashTendered>=amount,"invalidCashTendered");
+  const method=combined ? requestedMethod : needed(input.method || (kind==="transfer" ? "transfer" : "cash"),80);
   const multiple=rows.some((row)=>row.documentId!==target?.id);
   const entry=await tx.payment.create({data:{number:await number(tx,kind),kind,at,amount,partyId,employeeId:staff,method,note,actorId:actor.id,
     snapshot:json({...await snapshot(tx,partyId,multiple ? null : target?.vehicleId,staff) as object,jobId,
-      ...(kind==="receipt" && !rows.length ? {receiptTotal:String(amount)} : {}),
-      ...(cashTendered!==null ? {cashTendered:String(cashTendered)} : {})})}});
+      ...(kind==="receipt" && !rows.length ? {receiptTotal:String(amount)} : {})})}});
   const {available,recorded,balances,total}=await addAllocations(tx,entry,rows,receivedOn);
   requireRule(!["refund","supplierRefund","salaryPayment","expensePayment"].includes(kind) || available===0n,"allocationRequired");
   requireRule(!["receipt","supplierPayment"].includes(kind) || available===0n || input.allowCredit===true,"allowCredit");
   const incoming=["receipt","supplierRefund","contribution","cashOpening"].includes(kind);
   const movements=[{paymentId:entry.id,accountId,amount:incoming?amount:-amount,actorId:actor.id,at}];
   if(kind==="transfer"){
-    const to=await cashAccount(tx,input.toAccountId);
+    const {id:to}=await cashAccount(tx,input.toAccountId);
     requireRule(to!==accountId,"invalidAccount");
     movements.push({paymentId:entry.id,accountId:to,amount,actorId:actor.id,at});
   }
@@ -144,6 +149,7 @@ export async function unallocate(tx:Tx,input:Input):Promise<Change>{
   const id=needed(input.id);
   const before=await tx.allocation.findFirst({where:{id,releasedAt:null,payment:{reversedAt:null}},include:{document:true,payment:true}});
   requireRule(before && ["receipt","supplierPayment","advance"].includes(before.payment.kind),"invalidDocument");
+  requirePayrollOpen(before.document);
   const after=await tx.allocation.update({where:{id},data:{releasedAt:new Date(),reason:needed(input.reason,1000)}});
   await protectsRefunds(tx,before.document);
   return {id,entity:"allocation",before,after};
@@ -152,11 +158,13 @@ export async function reversePayment(tx:Tx,input:Input,actor:Actor):Promise<Chan
   const id=needed(input.id);
   const before=await tx.payment.findFirst({where:{id,reversedAt:null},include:{movements:true,allocations:{include:{document:true}}}});
   requireRule(before,"invalidDocument");
+  const active=before.allocations.filter((row)=>!row.releasedAt);
+  for(const allocation of active) requirePayrollOpen(allocation.document);
   const reason=needed(input.reason,1000);
   const at=date(input.at);
   requireRule(at>=before.at,"invalidDate");
   const after=await tx.payment.update({where:{id},data:{reversedAt:at,reverseReason:reason}});
-  for(const allocation of before.allocations.filter((row)=>!row.releasedAt)) await protectsRefunds(tx,allocation.document);
+  for(const allocation of active) await protectsRefunds(tx,allocation.document);
   await tx.cashMovement.createMany({data:before.movements.map((row)=>({
     paymentId:id,accountId:row.accountId,amount:-row.amount,actorId:actor.id,at,reversal:true,
   }))});
@@ -168,6 +176,19 @@ export async function expense(tx:Tx,input:Input,actor:Actor):Promise<Change>{
   const after=await document(tx,actor,"expense",{...documentDates(input),status:"posted",total,
     category:needed(input.category,120),title:needed(input.title),note:text(input.note),reference:text(input.payee,200)});
   return {id:after.id,entity:"document",after};
+}
+export async function paidExpense(tx:Tx,input:Input,actor:Actor):Promise<Change>{
+  const at=needed(input.at,10);
+  requireRule(today(date(at))<=today(),"invalidDate");
+  const method=needed(input.method,80);
+  const entry=await expense(tx,{
+    at, amount:input.amount, category:input.category, title:input.category, payee:input.payee, note:input.note,
+  },actor);
+  const paid=await payment(tx,{
+    kind:"expensePayment",at,amount:input.amount,accountId:input.accountId,method,note:input.note,
+    allocations:[{documentId:entry.id,amount:input.amount}],
+  },actor);
+  return {...entry,after:{expense:entry.after,payment:paid.after}};
 }
 export async function opening(tx:Tx,input:Input,actor:Actor):Promise<Change>{
   requireRule(!await tx.setting.findUnique({where:{key:"openingFinal"}}),"openingLocked");
@@ -208,9 +229,8 @@ export async function payEntry(tx:Tx,input:Input,actor:Actor){
   const id=needed(input.id);
   const before=await tx.document.findFirst({where:{id,kind:"payroll",status:"posted"}});
   requireRule(before,"invalidDocument");
-  const locked=(before.metadata as {locked?:boolean}).locked===true;
+  requirePayrollOpen(before);
   const kind=choice(input.kind,["base","daily","commission","bonus","deduction","correction","openingRecovery"] as const);
-  requireRule(!locked || kind==="correction","payLocked");
   const note=(["deduction","daily","correction","openingRecovery"].includes(kind)) ? needed(input.note,1000) : text(input.note,1000);
   const reference=text(input.reference,120);
   let amount=cents(input.amount,kind==="correction");
@@ -234,9 +254,28 @@ export async function payEntry(tx:Tx,input:Input,actor:Actor){
 export async function payFinalize(tx:Tx,input:Input,actor:Actor):Promise<Change>{
   const id=needed(input.id);
   const before=await tx.document.findFirst({where:{id,kind:"payroll",status:"posted"}});
-  requireRule(before && !(before.metadata as {locked?:boolean}).locked,"payLocked");
+  requireRule(before,"invalidDocument");
+  requirePayrollOpen(before);
+  if(input.version!==undefined) checkVersion(before,input);
+  requireRule(await due(tx,before)===0n,"payrollBalanceDue",409);
+  if (before.category==="weekly" && before.employeeId) {
+    requireRule(!await tx.employeeAbsence.findFirst({where:pendingAbsencesForWeek(before.employeeId,before.reference)}),
+      "absenceDeductionPending",409);
+  }
   const after=await tx.document.update({where:{id},data:{version:{increment:1},metadata:json({
     ...before.metadata as object,locked:true,lockedBy:actor.id,lockedAt:new Date().toISOString(),
+  })}});
+  return {id,entity:"document",before,after};
+}
+
+export async function payReopen(tx:Tx,input:Input,actor:Actor):Promise<Change>{
+  const id=needed(input.id);
+  const reason=needed(input.reason,1000);
+  const before=await tx.document.findFirst({where:{id,kind:"payroll",status:"posted"}});
+  requireRule(before && payrollLocked(before),"payrollAlreadyOpen",409);
+  checkVersion(before,input);
+  const after=await tx.document.update({where:{id},data:{version:{increment:1},metadata:json({
+    ...before.metadata as object,locked:false,reopenedBy:actor.id,reopenedAt:new Date().toISOString(),reopenReason:reason,
   })}});
   return {id,entity:"document",before,after};
 }

@@ -6,29 +6,33 @@ import { message, translate, type Language } from "@/lib/locale";
 import { requestKey } from "@/lib/request-key";
 import { Button } from "./ui";
 
-export function AbsenceToggle({ employeeId, absent, lang }: { employeeId: string; absent: boolean; lang: Language }) {
+type AttendanceAction = "mark" | "halfDay" | "undo";
+
+export function AbsenceToggle({ employeeId, day, state, lang }: {
+  employeeId: string; day?: string; state?: "mark" | "halfDay"; lang: Language;
+}) {
   const router = useRouter();
-  const key = useRef("");
+  const request = useRef<{ action: AttendanceAction; key: string } | null>(null);
   const [working, setWorking] = useState(false);
   const [refreshing, startTransition] = useTransition();
   const [error, setError] = useState("");
 
-  async function toggle() {
+  async function mark(action: AttendanceAction) {
     setWorking(true);
     setError("");
-    if (!key.current) key.current = requestKey();
+    if (request.current?.action !== action) request.current = { action, key: requestKey() };
     try {
       const result = await fetch("/api/actions/employeeAbsence", {
-        method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": key.current },
-        body: JSON.stringify({ employeeId, action: absent ? "undo" : "mark" }),
+        method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": request.current.key },
+        body: JSON.stringify({ employeeId, day, action }),
       });
       if (!result.ok) {
         const data = await result.json();
-        if (result.status < 500) key.current = "";
+        if (result.status < 500) request.current = null;
         setError(data.error ?? "serverError");
         return;
       }
-      key.current = "";
+      request.current = null;
       startTransition(() => router.refresh());
     } catch {
       setError("network");
@@ -37,10 +41,14 @@ export function AbsenceToggle({ employeeId, absent, lang }: { employeeId: string
     }
   }
 
-  return <div>
-    <Button type="button" disabled={working || refreshing} onClick={toggle}>
-      {translate(lang, working || refreshing ? "Saving…" : absent ? "Undo absence" : "Mark absent")}
-    </Button>
+  const disabled = working || refreshing;
+  return <div className="attendance-actions" aria-busy={disabled}>
+    {disabled && <small role="status">{translate(lang,"Saving…")}</small>}
+    <Button type="button" className="attendance-absent" aria-pressed={state==="mark"}
+      disabled={disabled || state==="mark"} onClick={()=>mark("mark")}>{translate(lang,"Mark absent")}</Button>
+    <Button type="button" className="attendance-half" aria-pressed={state==="halfDay"}
+      disabled={disabled || state==="halfDay"} onClick={()=>mark("halfDay")}>{translate(lang,"Half-day deduction")}</Button>
+    {state && <Button type="button" disabled={disabled} onClick={()=>mark("undo")}>{translate(lang,"Undo attendance")}</Button>}
     {error && <p className="error" role="alert">{message(lang, error)}</p>}
   </div>;
 }

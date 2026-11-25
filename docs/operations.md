@@ -2,6 +2,8 @@
 
 ## Production setup
 
+Generate a separate random secret for `POSTGRES_PASSWORD` with `openssl rand -hex 24` and for `BETTER_AUTH_SECRET` with `openssl rand -hex 32`. Store the values in deployment secrets. Set a unique initial Owner password and disable demo mode in production. Compose uses the named `pgdata` and `attachments` volumes, so Linux and Windows hosts use the same default configuration.
+
 Provision a Linux host with Docker Compose or adapt the Docker build for a managed PostgreSQL server. Maintain separate production and test environments. The example cluster listens only on the Compose network. The app binds the host loopback address by default. Put an HTTPS reverse proxy on the same host, use the public HTTPS origin in `BETTER_AUTH_URL`, and send the original Host and forwarded protocol. Use a private access network or access proxy where appropriate for the internal ERP. Set a proxy request-size cap slightly above 10 MiB and rate-limit authentication requests. Session creation checks active users, and TLS is required for off-site use.
 
 Use a clean production database, verify the business configuration in Settings, assign individual accounts, and reconcile paper-derived opening totals. Run the initial bootstrap once. Configure a health monitor for `/api/health` and monitor application and backup logs. Persist the PostgreSQL and attachment volumes. Track hosting, retained backups, attachment storage, alerting and maintenance against the budget after ownership and hosting decisions are made. The requirements document includes planning estimates and performance targets.

@@ -219,10 +219,12 @@ model EmployeeAbsence {
   day         DateTime @db.Date
   actorId     String
   voidedAt    DateTime?
+  halfDay     Boolean @default(false)
   deductSalary Boolean @default(false)
   deductionFromDay DateTime? @db.Date
   deductionEntryId String? @unique
   deductionEntry PayEntry? @relation(fields: [deductionEntryId], references: [id], onDelete: Restrict)
+  excesses PayrollExcess[]
 
   @@unique([employeeId, day])
 }
@@ -293,6 +295,7 @@ model Document {
   allocations Allocation[]
   attachments Attachment[]
   payroll     PayEntry[]
+  payrollExcesses PayrollExcess[]
 
   @@index([kind, at])
   @@index([partyId, kind])
@@ -364,6 +367,7 @@ model StockMovement {
 model MoneyAccount {
   id        String @id @default(cuid())
   name      String @unique
+  code      String? @unique
   kind      String
   archived  Boolean @default(false)
   version   Int @default(0)
@@ -405,6 +409,7 @@ model Payment {
   @@index([partyId, at])
   @@index([employeeId, at])
   @@index([kind, at])
+  payrollExcess PayrollExcess?
 }
 model Allocation {
   id         String @id @default(cuid())
@@ -432,6 +437,7 @@ model CashMovement {
   actorId   String
 
   @@index([accountId, at])
+  @@index([at])
   @@index([paymentId])
 }
 model PayEntry {
@@ -447,6 +453,22 @@ model PayEntry {
   absence    EmployeeAbsence?
 
   @@index([documentId, at])
+}
+model PayrollExcess {
+  id          String @id @default(cuid())
+  documentId  String
+  document    Document @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  absenceId   String?
+  absence     EmployeeAbsence? @relation(fields: [absenceId], references: [id], onDelete: Restrict)
+  paymentId   String? @unique
+  payment     Payment? @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  remaining   BigInt
+  voidedAt    DateTime?
+  note        String @default("")
+  at          DateTime
+
+  @@index([documentId])
+  @@index([absenceId])
 }
 model Attachment {
   id         String @id @default(cuid())

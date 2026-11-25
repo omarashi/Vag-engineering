@@ -3,7 +3,7 @@ import { db, json, type Tx } from "./db";
 import { document, snapshot, validParty, validVehicle } from "./documents";
 import { checkVersion, type Input } from "./masters";
 import { choice, date, integer, list, needed, record, requireRule, text, today, units } from "./rules";
-import { isService, serviceTypes } from "./services";
+import { isService, selectableServices, serviceTypes, visitServiceTypes } from "./services";
 import { hasServiceTitle, intakeStatuses, jobModes, serviceSummary, visitParts, visitWork, workshopIntake, type VisitPart } from "./visit-items";
 import type { Actor, Change } from "./transaction";
 
@@ -21,7 +21,7 @@ async function saveVisitParts(tx: Tx, input: unknown, prior: VisitPart[], visitI
   const changedIds = chosen.filter((part) => byId.get(part.partId)?.quantity !== part.quantity).map((part) => part.partId);
   const catalog = await tx.part.findMany({
     where: { id: { in: changedIds }, archived: false },
-    select: { id: true, name: true, code: true, price: true, onHand: true, reserved: true },
+    select: { id: true, name: true, code: true, price: true, onHand: true },
   });
   const catalogById = new Map(catalog.map((part) => [part.id, part]));
   return chosen.map((part) => {
@@ -29,7 +29,7 @@ async function saveVisitParts(tx: Tx, input: unknown, prior: VisitPart[], visitI
     if (existing?.quantity === part.quantity) return existing;
     const item = catalogById.get(part.partId);
     requireRule(item, "missingPart");
-    requireRule(item.onHand.minus(item.reserved).gte(part.quantity), "stockConflict", 409);
+    requireRule(item.onHand.gte(part.quantity), "stockConflict", 409);
     if (existing) return { ...existing, quantity: part.quantity };
     return { ...part, name: item.name, code: item.code, unitPrice: item.price.toString() };
   });
@@ -87,8 +87,9 @@ async function saveServiceRecord(tx: Tx, input: Input, actor: Actor, kind: "visi
   }
   const mileage = input.mileage == null || input.mileage === "" ? null : integer(input.mileage, 0, 9999999);
   const requested = input.services ?? (input.category ? [input.category] : []);
-  requireRule(Array.isArray(requested) && requested.length > 0 && requested.length <= serviceTypes.length, "needServices");
-  const services = [...new Set(requested.map((service) => choice(service, serviceTypes)))];
+  const choices = before && visitServiceTypes(before).includes("repair") ? serviceTypes : selectableServices;
+  requireRule(Array.isArray(requested) && requested.length > 0 && requested.length <= choices.length, "needServices");
+  const services = [...new Set(requested.map((service) => choice(service, choices)))];
   const previousTitle = before && !hasServiceTitle(before.metadata) ? before.title : "";
   const customTitle = input.title === undefined ? previousTitle : needed(input.title, 180);
   const inputDetails = input.serviceDetails === undefined

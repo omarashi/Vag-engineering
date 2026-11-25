@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import Link from "./navigation-link";
-import { ChevronDown, Plus, X } from "lucide-react";
+import { ChevronDown, Plus, Search, X } from "lucide-react";
 import { Button } from "./ui";
 import { message, translate, type Language } from "@/lib/locale";
 import type { VisitPartInput } from "@/lib/visit-items";
@@ -15,20 +15,20 @@ import { uploadWorkshopPhotos } from "@/lib/upload-workshop-photos";
 import { VisitPartsFields, type VisitPartOption } from "./visit-parts-fields";
 import { VisitInvoiceFields, type VisitInvoicePricing } from "./visit-invoice-fields";
 import { WorkshopPhotoPicker } from "./workshop-photo-picker";
+import { useDialogDismiss } from "./use-dialog-dismiss";
 
 export type Option = { value: string; name: string; related?: string; description?: string };
 export type Field = {
-  key: string; label: string; type?: "text" | "textarea" | "select" | "check" | "checkboxes" | "radio" | "date" | "tel";
+  key: string; label: string; type?: "text" | "textarea" | "select" | "searchSelect" | "check" | "checkboxes" | "radio" | "date" | "tel";
   value?: string | boolean | string[]; required?: boolean; options?: Option[]; wide?: boolean; ltr?: boolean; depends?: string;
-  advanced?: boolean; inputMode?: "numeric" | "decimal"; placeholder?: string; max?: string;
+  advanced?: boolean; inputMode?: "numeric" | "decimal"; placeholder?: string; searchPlaceholder?: string; max?: string;
   helpLink?: { href: string; label: string };
   withDetails?: boolean; autoFocus?: boolean;
   suggestions?: string[]; min?: string; minFrom?: string;
-  showWhen?: { key: string; value: string };
 };
 export type ActionSpec = {
   action: "customer" | "vehicle" | "visit" | "jobIntake" | "jobUpdate" | "visitInvoice" | "visitReceipt" | "customerDebtPayment" |
-    "payment" | "weeklyPayroll" | "employeeDismiss" | "supplierStock" | "supplierQuote"; title: string; submitLabel?: string; fields: Field[]; hidden?: Record<string, unknown>;
+    "payment" | "weeklyPayroll" | "employeeDismiss" | "resolvePayrollExcess" | "supplierStock" | "supplierQuote"; title: string; submitLabel?: string; fields: Field[]; hidden?: Record<string, unknown>;
   destination: string; triggerLabel?: string; relatedLink?: { field: string; owner: string; href: string; label: string };
   partOptions?: VisitPartOption[];
   partsLabel?: string;
@@ -48,21 +48,30 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
   const formId = useId();
   const router = useRouter();
   const [values, setValues] = useState<Record<string, unknown>>({});
+  const [searchQueries, setSearchQueries] = useState<Record<string, string>>({});
+  const [searchBrowsing, setSearchBrowsing] = useState<Record<string, boolean>>({});
   const [error, setError] = useState("");
   const [working, setWorking] = useState<"Saving…" | "Preparing photos…" | "Uploading photos…" | null>(null);
   const [photoFiles, setPhotoFiles] = useState<File[]>([]);
   const [pendingUpload, setPendingUpload] = useState<PendingPhotoUpload | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const submitting = useRef(false);
   const busy = working !== null;
+  const uncertain = Boolean(request.current?.uncertain);
+  const { finish, dismiss } = useDialogDismiss(dialog,showForm,lang,dirty,busy || uncertain || Boolean(pendingUpload));
   const prices = (values.servicePrices ?? {}) as Record<string, string>;
   const t = (key: string) => translate(lang, key);
-  const fields = spec.fields.filter(({ showWhen }) => !showWhen || values[showWhen.key] === showWhen.value);
+  const fields = spec.fields;
   const alternate = spec.alternate;
   const submission = alternate && values[alternate.when.key] === alternate.when.value ? alternate : spec;
 
   function open() {
     setValues({ ...spec.hidden, ...Object.fromEntries(spec.fields.map((field) => [field.key, field.value ?? ""])) });
+    setSearchQueries({});
+    setSearchBrowsing({});
     setError("");
+    setDirty(false);
     setShowForm(true);
   }
   useLayoutEffect(() => {
@@ -77,6 +86,7 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function update(key: string, value: string | boolean | string[] | Record<string, string> | VisitPartInput[]) {
+    setDirty(true);
     setValues((previous) => ({
       ...previous, [key]: value,
       ...Object.fromEntries(spec.fields.filter((field) => field.depends === key).map((field) => [field.key, ""])),
@@ -107,7 +117,9 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
     });
     if (!form.checkValidity() || missing) {
       setError(missing?.type === "checkboxes" ? "needServices" : "invalid");
-      const first = missing ? form.querySelector<HTMLElement>('[name="' + missing.key + '"]') : form.querySelector<HTMLElement>(":invalid");
+      const first = missing
+        ? form.querySelector<HTMLElement>('[name="' + missing.key + '"]') ?? form.querySelector<HTMLElement>('[data-search-for="' + missing.key + '"]')
+        : form.querySelector<HTMLElement>(":invalid");
       first?.focus();
       return false;
     }
@@ -115,14 +127,19 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
   }
 
   function goToSavedRecord(href: string) {
-    dialog.current?.close();
-    router.push(href);
-    router.refresh();
+    setDirty(false);
+    finish(() => {
+      router.push(href);
+      router.refresh();
+    });
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || (!pendingUpload && !validate(event.currentTarget))) return;
+    if (submitting.current || (!pendingUpload && !validate(event.currentTarget))) return;
+    if (spec.action==="resolvePayrollExcess" && values.resolution==="waive" && !uncertain &&
+      !window.confirm(t("Waive this excess deduction?"))) return;
+    submitting.current=true;
     setWorking(pendingUpload ? "Uploading photos…" : photoFiles.length && !preparedPhotos.current ? "Preparing photos…" : "Saving…");
     setError("");
     try {
@@ -160,7 +177,7 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
       else goToSavedRecord(upload.href);
     } catch {
       setError("network");
-    } finally { setWorking(null); }
+    } finally { submitting.current=false;setWorking(null); }
   }
 
   function renderField(field: Field) {
@@ -200,22 +217,76 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
         })}
       </fieldset>;
     }
-    const value = String(values[field.key] ?? "");
-    const props = { name: field.key, required: field.required, dir: field.ltr ? "ltr" : "auto" };
-    const listId = field.suggestions?.length ? formId + "-" + field.key + "-suggestions" : undefined;
-    const control = <label key={field.key} className={"field" + (field.wide ? " wide" : "") + (field.type === "check" ? " check" : "")}>
-      <span>{t(field.label)}{field.required && <em aria-hidden="true">*</em>}</span>
-      {field.type === "textarea" ? <textarea {...props} rows={3} value={value} onChange={(event) => update(field.key, event.target.value)}/> :
-        field.type === "select" ? <select {...props} value={value} disabled={Boolean(field.depends && !values[field.depends])} onChange={(event) => update(field.key, event.target.value)}>
-          <option value="">{t(field.depends && !values[field.depends] ? "Choose a customer first" : "Select…")}</option>
-          {optionsFor(field).map((option) => <option key={option.value} value={option.value}>{option.name}</option>)}
-        </select> :
-        field.type === "check" ? <input type="checkbox" checked={values[field.key] === true} onChange={(event) => update(field.key, event.target.checked)}/> :
-        <input {...props} type={field.type ?? "text"} min={field.minFrom ? String(values[field.minFrom] ?? "") : field.min} max={field.max} list={listId}
-          inputMode={field.inputMode} data-autofocus={field.autoFocus || undefined} placeholder={field.placeholder ? t(field.placeholder) : undefined}
-          value={value} onChange={(event) => update(field.key, event.target.value)}/>}
-      {listId && <datalist id={listId}>{field.suggestions?.map((name) => <option key={name} value={name}/>)}</datalist>}
-    </label>;
+    let control: ReactNode;
+    if (field.type === "searchSelect") {
+      const selected = String(values[field.key] ?? "");
+      const query = searchQueries[field.key] ?? "";
+      const browsing = searchBrowsing[field.key] ?? false;
+      const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      const options = optionsFor(field);
+      const showResults = browsing || terms.length > 0;
+      const matches = showResults ? options.filter((option) => terms.every((term) => option.name.toLowerCase().includes(term))) : [];
+      const selectedOption = options.find((option) => option.value === selected);
+      const resultsId = formId + "-" + field.key + "-results";
+      const hint = field.searchPlaceholder ?? "Search";
+      const choose = (value: string) => {
+        update(field.key, value);
+        setSearchQueries((previous) => ({ ...previous, [field.key]: "" }));
+        setSearchBrowsing((previous) => ({ ...previous, [field.key]: false }));
+      };
+      control = <div key={field.key} className={"field" + (field.wide ? " wide" : "")}>
+        <span>{t(field.label)}{field.required && <em aria-hidden="true">*</em>}</span>
+        {selectedOption && <div className="log-search-choice">
+          <span className="log-part-choice"><bdi>{selectedOption.name}</bdi></span>
+          <button type="button" className="icon-button" aria-label={t("Remove customer")} onClick={() => {
+            update(field.key, "");
+            setSearchBrowsing((previous) => ({ ...previous, [field.key]: true }));
+          }}><X size={17}/></button>
+        </div>}
+        <div className="log-part-picker">
+          <div className="log-search">
+            <Search size={16} aria-hidden="true"/>
+            <input type="search" autoComplete="off" dir="auto" data-search-for={field.key} aria-label={t(hint)}
+              placeholder={t(hint)} value={query}
+              onChange={(event) => setSearchQueries((previous) => ({ ...previous, [field.key]: event.target.value }))}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+                event.preventDefault();
+                if (matches.length === 1) choose(matches[0].value);
+              }}/>
+          </div>
+          <Button type="button" aria-expanded={showResults} aria-controls={resultsId} onClick={() => {
+            setSearchQueries((previous) => ({ ...previous, [field.key]: "" }));
+            setSearchBrowsing((previous) => ({ ...previous, [field.key]: !showResults }));
+          }}>{showResults ? <X size={14} aria-hidden="true"/> : <Plus size={14} aria-hidden="true"/>}
+            {t(showResults ? "Hide customers" : "Choose customer")}
+          </Button>
+        </div>
+        <div id={resultsId} hidden={!showResults}>
+          {matches.length > 0 ? <ul className="log-part-results">{matches.map((option) => <li key={option.value}>
+            <button type="button" className="log-part-choice" onClick={() => choose(option.value)}><bdi>{option.name}</bdi></button>
+          </li>)}</ul> : <p role="status">{t("No matching customers")}</p>}
+        </div>
+      </div>;
+    } else {
+      const value = String(values[field.key] ?? "");
+      const props = { name: field.key, required: field.required, dir: field.ltr ? "ltr" : "auto" };
+      const listId = field.suggestions?.length ? formId + "-" + field.key + "-suggestions" : undefined;
+      control = <label key={field.key} className={"field" + (field.wide ? " wide" : "") + (field.type === "check" ? " check" : "")}>
+        <span>{t(field.label)}{field.required && <em aria-hidden="true">*</em>}</span>
+        {field.type === "textarea" ? <textarea {...props} rows={3} value={value} onChange={(event) => update(field.key, event.target.value)}/> :
+          field.type === "select" ? <select {...props} value={value} disabled={Boolean(field.depends && !values[field.depends])} onChange={(event) => update(field.key, event.target.value)}>
+            <option value="">{t(field.depends && !values[field.depends] ? "Choose a customer first" : "Select…")}</option>
+            {optionsFor(field).map((option) => <option key={option.value} value={option.value}>{option.name}</option>)}
+          </select> :
+          field.type === "check" ? <input type="checkbox" checked={values[field.key] === true} onChange={(event) => update(field.key, event.target.checked)}/> :
+          <input {...props} type={field.type ?? "text"} min={field.minFrom ? String(values[field.minFrom] ?? "") : field.min} max={field.max} list={listId}
+            inputMode={field.inputMode} autoComplete={field.type==="tel"?"tel":undefined}
+            data-autofocus={field.autoFocus || undefined} placeholder={field.placeholder ? t(field.placeholder) : undefined}
+            value={value} onChange={(event) => update(field.key, event.target.value)}/>}
+        {listId && <datalist id={listId}>{field.suggestions?.map((name) => <option key={name} value={name}/>)}</datalist>}
+      </label>;
+    }
     const related = spec.relatedLink;
     const owner = related && values[related.owner];
     const help = related?.field === field.key && typeof owner === "string" && owner
@@ -224,15 +295,13 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
     if (!help || working || request.current?.uncertain) return control;
     return <div className={"log-field-help" + (field.wide ? " wide" : "")} key={field.key}>
       {control}
-      <Link className="log-related-link" href={help.href} onClick={() => dialog.current?.close()}>
+      <Link className="log-related-link" href={help.href} onNavigate={(event) => {event.preventDefault();dismiss(()=>router.push(help.href));}}>
         <Plus size={15} aria-hidden="true"/>{t(help.label)}
       </Link>
     </div>;
   }
 
   const advanced = fields.filter((field) => field.advanced);
-  const uncertain = Boolean(request.current?.uncertain);
-
   return <>
     <Button type="button" variant={primary ? "primary" : "secondary"} onClick={open}>{primary && <Plus size={16}/>} {t(spec.triggerLabel ?? spec.title)}</Button>
     <dialog className="dialog log-dialog" ref={dialog} aria-label={t(spec.title)}
@@ -243,20 +312,22 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
         preparedPhotos.current = null;
         setPendingUpload(null);
       }}
-      onCancel={(event) => { if (busy || uncertain || pendingUpload) event.preventDefault(); }}>
+      onCancel={(event) => { event.preventDefault();dismiss(); }}>
       {showForm && <form onSubmit={submit} noValidate>
         <header className="dialog-head"><h2>{t(spec.title)}</h2>
-          <button className="icon-button" type="button" disabled={busy || uncertain || Boolean(pendingUpload)} aria-label={t("Close")} onClick={() => dialog.current?.close()}><X size={21}/></button>
+          <button className="icon-button" type="button" disabled={busy || uncertain || Boolean(pendingUpload)} aria-label={t("Close")} onClick={()=>dismiss()}><X size={21}/></button>
         </header>
         <div className="dialog-body">
+          {working && <p className="sr-only" role="status">{t(working)}</p>}
           {pendingUpload ? <p className="notice" role="status">{t("Job saved. You can retry the photo upload or continue.")}</p> :
-            <div className="contents" inert={busy}>
+            <div className="contents" inert={busy||uncertain}>
               {spec.formSummary && <div className="payment-form-summary">
                 {spec.formSummary.name && <strong className="payment-summary-customer"><bdi>{spec.formSummary.name}</bdi></strong>}
                 <div><strong>{t(spec.formSummary.label)}</strong><bdi>{spec.formSummary.amount}</bdi></div>
                 {spec.formSummary.note && <p>{t(spec.formSummary.note)}</p>}
               </div>}
               {spec.invoicePricing && <VisitInvoiceFields lang={lang} pricing={spec.invoicePricing} prices={prices}
+                discount={String(values.invoiceDiscount ?? "")} onDiscountChange={(next)=>update("invoiceDiscount",next)}
                 onChange={(next) => update("servicePrices", next)}/>}
               <div className="form-grid">{fields.filter((field) => !field.advanced).map(renderField)}</div>
               {spec.partOptions && <VisitPartsFields lang={lang} options={spec.partOptions} legend={spec.partsLabel} parts={(values.parts ?? []) as VisitPartInput[]}
@@ -270,6 +341,7 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
                 {spec.photos.limit > 0 ? <WorkshopPhotoPicker lang={lang} limit={spec.photos.limit} selection={photoFiles} disabled={busy || uncertain}
                   onLimit={() => setError("photoLimit")} onChange={(files) => {
                     preparedPhotos.current = null;
+                    setDirty(true);
                     setPhotoFiles(files);
                     setError("");
                   }}/> : <span className="workshop-photo-hint">{t("Photo limit reached")}</span>}
@@ -280,7 +352,7 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
         <footer className="dialog-foot">
           {pendingUpload
             ? <Button type="button" disabled={busy} onClick={() => goToSavedRecord(pendingUpload.href)}>{t("Continue")}</Button>
-            : <Button type="button" disabled={busy || uncertain} onClick={() => dialog.current?.close()}>{t("Cancel")}</Button>}
+            : <Button type="button" disabled={busy || uncertain} onClick={()=>dismiss()}>{t("Cancel")}</Button>}
           <Button type="submit" variant="primary" disabled={busy}>{t(working ?? (pendingUpload ? "Retry photo upload" : uncertain ? "Try again" : submission.submitLabel ?? "Save"))}</Button>
         </footer>
       </form>}

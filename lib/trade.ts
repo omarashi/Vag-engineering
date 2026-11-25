@@ -132,7 +132,6 @@ export async function invoice(tx:Tx,input:Input,actor:Actor):Promise<Change>{
   const byPart=new Map<string,{quantity:Prisma.Decimal;cost:bigint}>();
   if (job) {
     for (const item of job.jobStock) {
-      requireRule(item.reserved.isZero(),"reconcileJob");
       byPart.set(item.partId,{quantity:item.issued,cost:item.issuedCost});
     }
     for (const row of rows.filter((entry)=>entry.partId)) {

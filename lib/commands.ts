@@ -8,7 +8,7 @@ import * as trade from "./trade";
 import * as cash from "./cash";
 import * as inventory from "./stock";
 import { saveSupplierQuote, supplierStock } from "./supplier-price-list";
-import { employeeAbsence, employeeDismiss, weeklyPayroll } from "./payroll";
+import { employeeAbsence, employeeDismiss, resolvePayrollExcess, weeklyPayroll } from "./payroll";
 import type { Command } from "./permissions";
 import type { Tx } from "./db";
 import type { Change } from "./transaction";
@@ -23,9 +23,10 @@ const handlers: Record<Command,(tx:Tx,data:masters.Input,actor:Actor)=>Promise<C
   stock:inventory.stock,jobStock:inventory.jobStock,supplierStock,supplierQuote:saveSupplierQuote,
   purchaseOrder:trade.purchaseOrder,purchase:trade.purchase,invoice:trade.invoice,credit:trade.credit,reverseDocument:trade.reverseDocument,
   payment:cash.payment,visitInvoice,visitReceipt,customerDebtPayment:cash.customerDebtPayment,allocate:cash.allocate,unallocate:cash.unallocate,reversePayment:cash.reversePayment,expense:cash.expense,
+  paidExpense:cash.paidExpense,
   opening:cash.opening,openingFinalize:cash.openingFinalize,payPeriod:cash.payPeriod,
-  payEntry:cash.payEntry,payFinalize:cash.payFinalize,
-  employeeAbsence,employeeDismiss,weeklyPayroll,
+  payEntry:cash.payEntry,payFinalize:cash.payFinalize,payReopen:cash.payReopen,
+  employeeAbsence,employeeDismiss,resolvePayrollExcess,weeklyPayroll,
 };
 
 export async function command(actor:Actor,action:string,key:string,input:unknown) {

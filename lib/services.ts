@@ -1,16 +1,17 @@
 import { translate, type Language } from "./locale";
 
 const names = {
-  maintenance: "Maintenance",
-  tuning: "Tuning",
-  diagnostics: "Diagnostics",
-  repair: "Repair",
   installation: "Parts installation",
+  maintenance: "Routine maintenance",
+  diagnostics: "Diagnostics",
+  tuning: "Software tuning",
   inspection: "Inspection",
-  other: "Other",
+  repair: "Repair",
+  other: "Other work",
 } as const;
 export type ServiceType = keyof typeof names;
 export const serviceTypes = Object.keys(names) as ServiceType[];
+export const selectableServices = serviceTypes.filter((service) => service !== "repair");
 
 export function isService(value: unknown): value is ServiceType {
   return typeof value === "string" && Object.hasOwn(names, value);

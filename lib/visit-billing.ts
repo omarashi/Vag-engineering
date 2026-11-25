@@ -1,13 +1,13 @@
 import { Prisma } from "@prisma/client";
 import type { Tx } from "./db";
 import { document, snapshot, validParty, type LineData } from "./documents";
-import { cents, date, extended, needed, requireRule, today, units } from "./rules";
+import { cents, date, extended, needed, requireRule, text, today, units } from "./rules";
 import { payment } from "./cash";
 import { move } from "./stock";
 import type { Actor, Change } from "./transaction";
 import type { Input } from "./masters";
 import { visitParts, visitWork, workshopIntake } from "./visit-items";
-import { parseMoney } from "./decimal-input";
+import { divideHalfUp, parseMoney } from "./decimal-input";
 import { serviceName } from "./services";
 import { recordedDeliveryDate } from "./visits";
 
@@ -57,7 +57,22 @@ async function billVisit(tx: Tx, actor: Actor, visit: Awaited<ReturnType<typeof 
     };
   });
   const lines = [...serviceLines, ...partsLines];
-  requireRule(lines.some((line) => line.total > 0n), "amountMismatch");
+  const subtotal = lines.reduce((sum, line) => sum + line.total, 0n);
+  requireRule(subtotal > 0n, "amountMismatch");
+  const discount = parseMoney(text(input.invoiceDiscount,24) || "0");
+  requireRule(discount !== null && discount >= 0n && discount <= subtotal, "invalidInvoiceDiscount");
+  if (discount > 0n) {
+    // Allocate the discount across existing lines so partial returns use their net values.
+    let grossSoFar = 0n;
+    let assigned = 0n;
+    for (const line of lines) {
+      grossSoFar += line.total;
+      const allocatedDiscount = divideHalfUp(grossSoFar * discount, subtotal);
+      line.discount = allocatedDiscount - assigned;
+      line.total -= line.discount;
+      assigned = allocatedDiscount;
+    }
+  }
   const billed = await document(tx, actor, "invoice", {
     partyId: visit.partyId, vehicleId: visit.vehicleId, sourceId: visit.id, at, title: visit.title, status: "posted",
     note: visit.note,
@@ -88,11 +103,12 @@ export async function visitReceipt(tx: Tx, input: Input, actor: Actor): Promise<
   const amount = cents(input.amount);
   requireRule(amount > 0n, "amountMismatch");
   const at = date(input.at);
-  if (existing) requireRule(input.servicePrices === undefined, "alreadyPosted", 409);
+  if (existing) requireRule(input.servicePrices === undefined && input.invoiceDiscount === undefined, "alreadyPosted", 409);
   const invoice = existing ?? await billVisit(tx, actor, visit, input, at);
   const paid = await payment(tx, {
     kind: "receipt", invoiceId: invoice.id, amount: input.amount, accountId: input.accountId, method: input.method, at: input.at,
-    note: input.note, cashTendered: input.cashTendered,
+    receiptDestination: input.receiptDestination,
+    note: input.note,
   }, actor);
   return { ...paid, after: { invoiceId: invoice.id, createdInvoice: !existing, payment: paid.after } };
 }

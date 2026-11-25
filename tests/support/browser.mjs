@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { chromium } from "../../data/tooling/node_modules/playwright-core/index.mjs";
+import { existsSync } from "node:fs";
+import { chromium } from "playwright";
 
-export function launchEdge() {
-  const executablePath = process.env.VAG_EDGE_PATH ?? "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe";
+export function launchBrowser() {
+  const edge = "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe";
+  const executablePath = process.env.VAG_EDGE_PATH ?? (process.platform==="win32" && existsSync(edge) ? edge : undefined);
   return chromium.launch({ executablePath, headless: true });
 }
 

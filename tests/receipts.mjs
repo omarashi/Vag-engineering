@@ -19,7 +19,7 @@ try {
   const accountant = await login("accountant");
   const technician = await login("technician");
   const partyId = await post(owner, "customer", { name: "Receipt QA " + randomUUID().slice(0,8) });
-  const vehicleId = await post(owner, "vehicle", { partyId, make: "Volkswagen", model: "Golf" });
+  const vehicleId = await post(owner, "vehicle", { partyId, make: "Volkswagen", model: "Golf", color: "White" });
   const part = { name: "Oil filter", code: "QA-" + randomUUID().slice(0, 8), price: "125", cost: "65" };
   const partId = await post(owner, "part", part);
   await post(owner, "stock", { partId, quantity: "8", kind: "adjustment", reason: "Itemized invoice test" });
@@ -62,7 +62,7 @@ try {
   assert.deepEqual(invoice.metadata.serviceDetails, visit.serviceDetails);
   assert.equal(invoice.metadata.itemizedVisit, true);
   assert.deepEqual(invoice.lines.map(({ description, price, total }) => [description, price, total]), [
-    ["Maintenance", 10025n, 10025n], ["Tuning", 14975n, 14975n], [part.code + " · Oil filter", 12500n, 25000n],
+    ["Routine maintenance", 10025n, 10025n], ["Software tuning", 14975n, 14975n], [part.code + " · Oil filter", 12500n, 25000n],
   ]);
   assert.equal(invoice.lines[2].partId, partId);
   assert.equal(invoice.lines[2].quantity.toString(), "2");
@@ -91,21 +91,20 @@ try {
   assert.equal(await onHand(), "6");
   const originalReceipt = await db.payment.findUniqueOrThrow({ where: { id: receipt } });
   const receiptBusiness = { ...originalReceipt.snapshot.business, name: "Workshop Print QA", logo: "/storefront.jpg" };
-  const legacySnapshot = { ...originalReceipt.snapshot, business: receiptBusiness };
-  delete legacySnapshot.cashTendered;
+  const legacySnapshot = { ...originalReceipt.snapshot, business: receiptBusiness, cashTendered: "25000" };
   delete legacySnapshot.receiptTotal;
   await db.payment.update({ where: { id: receipt }, data: { snapshot: legacySnapshot } });
   const read = await fetch(base + "/print/payment/" + receipt + "?lang=ar", { headers: { Cookie: accountant } });
   assert.equal(read.status, 200);
   const html = await read.text();
   assert.match(html, /dir="rtl" lang="ar-EG"/);
-  assert.match(html, /Golf/);
+  assert.match(html, /<bdi>Golf White<\/bdi>/);
   assert.match(html, /Replaced engine oil and filter/);
   assert.match(html, /Calibrated ECU and checked boost logs/);
   assert.match(html, /Oil filter/);
   assert.match(html, /alt="Workshop Print QA"[^>]*src="\/storefront\.jpg"/);
   assert.match(html, /receipt-print-brand"><strong>Workshop Print QA/);
-  assert.match(html, /الباقي اللي اتردّ<\/dt><dd>—<\/dd>/);
+  assert.doesNotMatch(html, /الباقي اللي اتردّ/);
   const invoicePrint = await fetch(base + "/print/record/" + invoice.id + "?lang=en", { headers: { Cookie: accountant } });
   assert.equal(invoicePrint.status, 200);
   const invoiceHtml = await invoicePrint.text();
@@ -116,6 +115,7 @@ try {
   assert.match(invoiceHtml, /Amount due.*0\.00/);
   assert.match(html, /الإجمالي<\/dt><dd><bdi>[^<]*٥٠٠٫٠٠/);
   assert.match(html, /المدفوع<\/dt><dd><bdi>[^<]*٢٠٠٫٠٠/);
+  assert.doesNotMatch(html,/Workshop cash/);
   const secondCar = await post(owner, "vehicle", { partyId, make: "Audi", model: "A3" });
   async function chargeVisit(at, vehicleId, price, detail) {
     const sourceId = await post(technician, "visit", {
@@ -133,19 +133,13 @@ try {
   assert.equal((await action(owner, "customerDebtPayment", { ...debt, at: "2025-11-18" })).status, 422);
   assert.equal((await action(owner, "customerDebtPayment", { ...debt, at: "2099-01-01" })).status, 422);
   const debtKey = randomUUID();
-  const shortCash = await action(accountant, "customerDebtPayment", { ...debt, cashTendered: "300" });
-  assert.equal(shortCash.status, 422);
-  assert.equal((await shortCash.json()).error, "invalidCashTendered");
-  const cardTender = await action(accountant, "customerDebtPayment", { ...debt, method: "card", cashTendered: "400" });
-  assert.equal(cardTender.status, 422);
-  const debtWithChange = { ...debt, cashTendered: "٤٠٠" };
-  const installment = await post(accountant, "customerDebtPayment", debtWithChange, debtKey);
-  assert.equal(await post(accountant, "customerDebtPayment", debtWithChange, debtKey), installment);
+  const installment = await post(accountant, "customerDebtPayment", debt, debtKey);
+  assert.equal(await post(accountant, "customerDebtPayment", debt, debtKey), installment);
   const ledgerEntry = await db.payment.findUniqueOrThrow({ where: { id: installment }, include: { allocations: true, movements: true } });
   assert.equal(ledgerEntry.movements.length, 1);
   assert.equal(ledgerEntry.movements[0].amount, 35000n);
   assert.equal(ledgerEntry.amount, 35000n);
-  assert.equal(ledgerEntry.snapshot.cashTendered, "40000");
+  assert.equal(Object.hasOwn(ledgerEntry.snapshot,"cashTendered"),false);
   assert.equal(ledgerEntry.snapshot.receiptTotal, "70000");
   assert.deepEqual(new Map(ledgerEntry.allocations.map(({ documentId, amount }) => [documentId, amount])), new Map([[older, 30000n], [newer, 5000n]]));
   assert.equal(ledgerEntry.snapshot.customerDebtAfter, "37500");
@@ -159,9 +153,8 @@ try {
   assert.match(nextReceipt, /Inspect brakes and suspension/);
   assert.match(nextReceipt, /Scan transmission faults/);
   assert.match(nextReceipt, /Total<\/dt><dd><bdi>EGP\s*700\.00/);
-  assert.match(nextReceipt, /Paid<\/dt><dd><bdi>EGP\s*400\.00/);
-  assert.match(nextReceipt, /Change given<\/dt><dd><bdi>EGP\s*50\.00/);
-  assert.doesNotMatch(nextReceipt, /Customer balance after payment|Applied from this payment/);
+  assert.match(nextReceipt, /Paid<\/dt><dd><bdi>EGP\s*350\.00/);
+  assert.doesNotMatch(nextReceipt, /Change given|Customer balance after payment|Applied from this payment/);
   const settle = { ...debt, amount: "375", at: "2025-12-03" };
   const concurrently = await Promise.all([action(owner, "customerDebtPayment", settle), action(accountant, "customerDebtPayment", settle)]);
   assert.deepEqual(concurrently.map((response) => response.status).sort(), [200, 422]);
@@ -169,7 +162,7 @@ try {
   const finalEntry = await db.payment.findUniqueOrThrow({ where: { id: final }, include: { allocations: true } });
   assert.deepEqual(new Map(finalEntry.allocations.map(({ documentId, amount }) => [documentId, amount])), new Map([[newer, 35000n], [opening, 2500n]]));
   assert.equal(finalEntry.snapshot.customerDebtAfter, "0");
-  assert.match(await readReceipt(installment), /Change given<\/dt><dd><bdi>EGP\s*50\.00/);
+  assert.match(await readReceipt(installment), /Paid<\/dt><dd><bdi>EGP\s*350\.00/);
   await post(owner, "reversePayment", { id: final, at: "2025-12-03", reason: "Payment reversal QA" });
   const replacement = await post(owner, "customerDebtPayment", settle);
   assert.notEqual(replacement, final);
@@ -298,9 +291,9 @@ try {
   assert.match(settledHtml, /Amount due.*0\.00/);
 
   const heldJob = await post(technician, "jobIntake", {
-    partyId, vehicleId, jobMode: "stay", at: "2025-11-17", receivedBy: "Billing QA", services: ["repair"],
+    partyId, vehicleId, jobMode: "stay", at: "2025-11-17", receivedBy: "Billing QA", services: ["installation","inspection"],
   });
-  const checkout = { visitId: heldJob, servicePrices: { repair: "600" }, amount: "300", accountId: account.id, at: "2025-11-18" };
+  const checkout = { visitId: heldJob, servicePrices: { installation: "400",inspection:"200" }, amount: "300", accountId: account.id, at: "2025-11-18" };
   const beforeDelivery = await action(owner, "visitReceipt", checkout);
   assert.equal(beforeDelivery.status, 422);
   assert.equal((await beforeDelivery.json()).error, "finishBeforeBilling");
@@ -309,10 +302,19 @@ try {
   assert.equal(earlyInvoice.status, 422);
   assert.equal((await earlyInvoice.json()).error, "invalidInvoiceDate");
   assert.equal(await db.document.count({ where: { sourceId: heldJob, kind: "invoice" } }), 0);
-  const heldReceipt = await post(owner, "visitReceipt", { ...checkout, at: "2025-11-19" });
-  const heldInvoice = await db.document.findFirstOrThrow({ where: { sourceId: heldJob, kind: "invoice" } });
-  assert.equal(heldInvoice.total, 60000n);
+  for(const invoiceDiscount of ["-1","600.01","hello"]){
+    const rejected=await action(owner,"visitReceipt",{...checkout,at:"2025-11-19",invoiceDiscount});
+    assert.equal(rejected.status,422);
+    assert.equal((await rejected.json()).error,"invalidInvoiceDiscount");
+  }
+  const heldReceipt = await post(owner, "visitReceipt", { ...checkout, at: "2025-11-19",invoiceDiscount:"٦٠٫٠١" });
+  const heldInvoice = await db.document.findFirstOrThrow({ where: { sourceId: heldJob, kind: "invoice" },include:{lines:{orderBy:{position:"asc"}}} });
+  assert.equal(heldInvoice.total, 53999n);
+  assert.deepEqual(heldInvoice.lines.map(({discount,total})=>[discount,total]),[[4001n,35999n],[2000n,18000n]]);
   assert.equal((await db.allocation.findFirstOrThrow({ where: { documentId: heldInvoice.id, paymentId: heldReceipt } })).amount, 30000n);
+  const discountedReceipt=await readReceipt(heldReceipt);
+  assert.match(discountedReceipt,/Discount<\/dt><dd><bdi>EGP\s*60\.01/);
+  assert.doesNotMatch(discountedReceipt,/Workshop cash/);
 
   const employeeId = await post(owner, "employee", {
     name: "Weekly payroll QA " + randomUUID().slice(0, 8), startedAt: "2025-11-15", weeklySalary: "3000", paidDaysPerWeek: 6,
@@ -384,7 +386,7 @@ try {
   assert.equal((await db.payment.findUniqueOrThrow({where:{id:paidWithDeduction}})).amount,250000n);
   assert.ok((await db.employeeAbsence.findUniqueOrThrow({where:{id:pendingId}})).deductionEntryId);
 
-  const rollEmployeeId = await post(owner,"employee",{name:"Payroll rollover QA "+randomUUID().slice(0,8),weeklySalary:"3000"});
+  const rollEmployeeId = await post(owner,"employee",{name:"Payroll week QA "+randomUUID().slice(0,8),weeklySalary:"3000"});
   const bookedWeek = {employeeId:rollEmployeeId,weekEnding:cairoToday,at:cairoToday,accountId:account.id};
   const nextWeek = new Date(Date.parse(cairoToday+"T12:00:00Z")+7*86400000).toISOString().slice(0,10);
   const beforePay = await post(owner,"weeklyPayroll",{...bookedWeek,kind:"advance",amount:"600"});
@@ -392,25 +394,24 @@ try {
   assert.equal((await db.allocation.findFirstOrThrow({where:{paymentId:beforePay}})).documentId,firstPeriod.id);
   await post(owner,"weeklyPayroll",{...bookedWeek,kind:"salaryPayment"});
 
-  const rolledAdvanceInput = {...bookedWeek,kind:"advance",amount:"400",periodId:firstPeriod.id,expectedBalance:"0",targetWeek:nextWeek,targetPeriodId:""};
-  const rolledKey = randomUUID();
-  const rolledAdvance = await post(owner,"weeklyPayroll",rolledAdvanceInput,rolledKey);
-  assert.equal(await post(owner,"weeklyPayroll",rolledAdvanceInput,rolledKey),rolledAdvance);
-  const nextPeriod = await db.document.findFirstOrThrow({where:{employeeId:rollEmployeeId,kind:"payroll",reference:nextWeek}});
-  assert.equal((await db.allocation.findFirstOrThrow({where:{paymentId:rolledAdvance}})).documentId,nextPeriod.id);
-  assert.equal(await post(owner,"weeklyPayroll",{...bookedWeek,kind:"deduction",amount:"200",note:"Deduction after pay"}),nextPeriod.id);
+  const rejectedAdvance = await action(owner,"weeklyPayroll",{...bookedWeek,kind:"advance",amount:"400"});
+  assert.equal(rejectedAdvance.status,422);
+  assert.equal((await rejectedAdvance.json()).error,"advanceWeekPaid");
+  assert.equal(await db.document.count({where:{employeeId:rollEmployeeId,kind:"payroll",reference:nextWeek}}),0);
+
+  const sameWeekDeduction = await post(owner,"weeklyPayroll",{...bookedWeek,kind:"deduction",amount:"200",note:"Deduction after pay"});
+  assert.equal(sameWeekDeduction,firstPeriod.id);
+  const deductionReview = await db.payrollExcess.findFirstOrThrow({where:{documentId:firstPeriod.id,voidedAt:null,note:"Deduction after pay"}});
+  assert.equal(deductionReview.remaining,20000n);
+  await post(owner,"resolvePayrollExcess",{id:deductionReview.id,expectedBalance:"20000",reason:"No balance this week",resolution:"waive"});
+
   const rolledAbsence = await post(owner,"employeeAbsence",{employeeId:rollEmployeeId,action:"mark"});
   const absenceAfterPay = await db.employeeAbsence.findUniqueOrThrow({where:{id:rolledAbsence},include:{deductionEntry:true}});
-  assert.equal(absenceAfterPay.deductionEntry.documentId,nextPeriod.id);
-  assert.equal(absenceAfterPay.deductionEntry.amount,-50000n);
-  const laterPay = await post(owner,"weeklyPayroll",{...bookedWeek,weekEnding:nextWeek,kind:"salaryPayment"});
-  assert.equal((await db.payment.findUniqueOrThrow({where:{id:laterPay}})).amount,190000n);
-  const followingWeek = new Date(Date.parse(nextWeek+"T12:00:00Z")+7*86400000).toISOString().slice(0,10);
-  const followingDeduction = await post(owner,"weeklyPayroll",{...bookedWeek,kind:"deduction",amount:"100",note:"Both earlier weeks paid"});
-  assert.equal((await db.document.findUniqueOrThrow({where:{id:followingDeduction}})).reference,followingWeek);
+  assert.equal(absenceAfterPay.deductionEntryId,null);
+  assert.equal(await db.document.count({where:{employeeId:rollEmployeeId,kind:"payroll",reference:nextWeek}}),0);
   assert.equal((await db.document.findUniqueOrThrow({where:{id:firstPeriod.id}})).total,300000n);
   await post(owner,"employeeAbsence",{employeeId:rollEmployeeId,action:"undo"});
-  assert.equal((await db.document.findUniqueOrThrow({where:{id:nextPeriod.id}})).total,280000n);
+  assert.equal(await db.payrollExcess.count({where:{documentId:firstPeriod.id,voidedAt:null}}),0);
 
   const deferredEmployee = await post(owner,"employee",{name:"Deferred absence QA "+randomUUID().slice(0,8),weeklySalary:"3000"});
   const deferredWeek = {...bookedWeek,employeeId:deferredEmployee};

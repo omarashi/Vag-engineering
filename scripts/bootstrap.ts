@@ -26,10 +26,19 @@ async function main() {
     console.log("Initial owner created.");
     return;
   }
+  const demoLogins=[
+    {email:"owner@vag-demo.test",name:"Omar Khaled",role:"owner"},
+    {email:"accountant@vag-demo.test",name:"Mariam Adel",role:"accountant"},
+    {email:"technician@vag-demo.test",name:"Youssef Nabil",role:"technician"},
+  ] as const;
+  const existing=await db.user.findMany({where:{email:{in:demoLogins.map(({email})=>email)}},select:{email:true,role:true,active:true}});
+  for(const user of existing){
+    if(!user.active || demoLogins.find(({email})=>email===user.email)?.role!==user.role){
+      throw new Error("Demo bootstrap requires an active "+user.email+" login with the expected role.");
+    }
+  }
   const password = process.env.VAG_DEMO_PASSWORD || "Demo-Workshop-2026!";
-  const actor = await createAccount("owner@vag-demo.test", "Omar Khaled", "owner", password);
-  await createAccount("accountant@vag-demo.test", "Mariam Adel", "accountant", password);
-  await createAccount("technician@vag-demo.test", "Youssef Nabil", "technician", password);
+  const [actor]=await Promise.all(demoLogins.map(({email,name,role})=>createAccount(email,name,role,password)));
   async function add(action: "customer" | "vehicle" | "visit" | "account", key: string, input: unknown) {
     const result = await command(actor, action, "seed-vag-demo-" + key, input) as { id: string };
     return result.id;
@@ -42,7 +51,7 @@ async function main() {
     ["Karim Mansour", "01015550101", "Volkswagen", "Golf GTI", "س ر د ٢٤٨١", "Stage 2", "tuning", "Stage 2 ECU calibration", "Road logs checked after calibration."],
     ["Nour Hassan", "01015550102", "Audi", "A3 8V", "م و ب ٣٩١٤", "Stock", "maintenance", "DSG oil and filter change", "Changed gearbox oil and filter."],
     ["Ahmed Samir", "01015550103", "CUPRA", "Formentor", "ع ن ر ١٢٤٥", "Stage 1", "inspection", "Pre-tune inspection", "Checked boost, plugs and service history."],
-    ["Salma Farouk", "01015550104", "Škoda", "Octavia vRS", "د أ س ٤٦٣٢", "Stock", "repair", "Front brake replacement", "Replaced the front pads and tested the brakes."],
+    ["Salma Farouk", "01015550104", "Škoda", "Octavia vRS", "د أ س ٤٦٣٢", "Stock", "installation", "Front brake replacement", "Replaced the front pads and tested the brakes."],
     ["Mahmoud Ali", "01015550105", "SEAT", "Leon FR", "ر ص د ٥٥١٢", "Stage 1", "installation", "Intake kit fitted", "Fitted intake kit and checked for leaks."],
     ["Hana Mostafa", "01015550106", "Volkswagen", "Passat", "م ن ج ٩٢٣٥", "Stock", "diagnostics", "Intermittent warning light", "Scanned the car and recorded the fault codes."],
   ];

@@ -150,6 +150,9 @@
 .log-part-picker .log-search{flex:1;min-width:min(175px,100%)}
 .log-part-choice{min-width:0;overflow-wrap:anywhere;text-align:start}
 .log-part-choice small{display:block;color:var(--muted)}
+.log-search-choice{display:flex;align-items:center;gap:8px;min-width:0;padding:7px 9px;border:1px solid var(--edge);border-radius:6px;background:var(--bg)}
+.log-search-choice .log-part-choice{flex:1}
+.log-search-choice .icon-button{flex:none}
 .log-part-results{list-style:none;margin:0;padding:0;border:1px solid var(--edge);border-radius:6px;max-height:13rem;overflow:auto}
 .log-part-results li+li{border-top:1px solid var(--edge-soft)}
 .log-part-results button{width:100%;padding:7px 9px;background:var(--bg);cursor:pointer}
@@ -275,6 +278,28 @@
 .receipt-print .invoice-service-detail{color:#000}
 .receipt-print :is(.receipt-bill,.receipt-totals,.print-footer){border-color:#000}
 .receipt-print-brand{text-align:center}
+.accounting-totals{display:flex;flex-wrap:wrap;gap:12px 28px;padding:12px 15px;margin:0}
+.accounting-totals dt,.accounting-filter,.accounting-period{color:var(--muted);font-size:12px}
+.accounting-totals dd{margin:3px 0 0;font-size:20px;font-weight:720;font-variant-numeric:tabular-nums}
+.accounting-filter,.accounting-entries{display:grid;gap:4px}
+.accounting-entries small{color:var(--muted)}
+.accounting-period{display:block}
+.attendance-actions{display:flex;gap:5px;flex-wrap:wrap;min-width:185px}
+.attendance-actions .button{min-height:30px;padding:4px 8px}
+.attendance-actions [aria-pressed=true]{opacity:1;box-shadow:inset 0 0 0 1px currentColor}
+.attendance-status{display:inline-flex;width:max-content;padding:3px 6px;border-radius:5px;font-weight:650}
+.attendance-absent{color:#fff!important;background:#a6212b!important;border-color:#a6212b!important}
+.attendance-half{color:#fff!important;background:#1d4ed8!important;border-color:#1d4ed8!important}
+@media screen and (max-width:768px){
+  .log-shell :is(input:not([type=checkbox],[type=radio],[type=hidden]),select,textarea),
+  .login-form input,.log-topbar .log-search input,.log-dialog input:not([type=checkbox],[type=radio]),.log-dialog select,.log-dialog textarea{font-size:16px}
+  .log-shell :is(.button,.icon-button,.log-search button),.login-form .button,.log-dialog .icon-button,
+  .log-content .attendance-actions .button{min-block-size:44px;min-inline-size:44px}
+  .log-shell :is(.log-row-main small,.log-dialog .field,.accounting-entries small){font-size:14px;color:var(--muted)}
+  .table-sticky-key :is(th,td):first-child{position:sticky;inset-inline-start:0;z-index:1;background:var(--panel)}
+  .table-sticky-key :is(th,td):first-child .attendance-actions{min-inline-size:0;max-inline-size:135px}
+  .table-sticky-key :is(th,td):first-child .attendance-actions .button{white-space:normal;text-align:start}
+}
 @media print{
   html:has(.receipt-print){color-scheme:light}
 }

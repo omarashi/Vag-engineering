@@ -1,10 +1,12 @@
 import Link from "./navigation-link";
+import Form from "next/form";
 import { CalendarDays, CarFront, ChevronDown, ChevronLeft, ChevronRight, ShoppingCart } from "lucide-react";
 import { db, plain } from "@/lib/db";
 import { workshopPhotosEnabled, workshopPhotosOn } from "@/lib/workshop-photos";
 import { supplierPriceList, supplierQuoteCode } from "@/lib/supplier-price-list";
 import { carName } from "@/lib/car-name";
-import { cashAccounts, documents, ledgerSummary, parts, parties, payments, statement, vehicles, type Filters } from "@/lib/views";
+import { cashbook, cashbookDate, documents, inventoryFilters, inventoryValue, parts, parties, payments, reportDocumentKinds,
+  reportCashSummary, reportDocumentSummary, reportFilters, statement, vehicles, type Filters } from "@/lib/views";
 import { ActionForm } from "./backoffice-form";
 import { Actions, Amt, CashAccountSetup, DocRegister, ExportLink, Heading, Info, Pages, PayRegister, PrintLink, Ref, Register, Toolbar } from "./register";
 import { Badge, ButtonLink, Panel } from "./ui";
@@ -12,8 +14,9 @@ import { date, today } from "@/lib/rules";
 import { clock, day, label, translate, type Language } from "@/lib/locale";
 import { closedJobStatuses, openJobStatuses } from "@/lib/workshop";
 import type { Forms } from "@/lib/forms";
-import { PaymentKind, type DocumentKind, type Role } from "@prisma/client";
+import { PaymentKind, type Role } from "@prisma/client";
 import { can } from "@/lib/permissions";
+import { accountName, accountTypeName } from "@/lib/payment-options";
 import { ActionForm as JobActionForm } from "./action-form";
 import { customerChoices, jobCarChoices, jobForm, newCustomerForJob, newCustomerLabel, receiverSuggestions, visitPartOptions } from "@/lib/visit-forms";
 
@@ -71,18 +74,35 @@ export async function Workshop({lang,query,role,view}:Omit<ModuleProps,"forms">&
     <div className="panel"><DocRegister lang={lang} docs={docs} mode="jobs"/></div>
     <Pages lang={lang} path={path} filters={filters} count={docs.length}/></>;
 }
+function StockValues({lang,totals}:{lang:Language;totals:Awaited<ReturnType<typeof inventoryValue>>}){
+  const t=(key:string)=>translate(lang,key);
+  const panel=(title:string,cost:string,selling:string)=><Panel title={t(title)}>
+    <dl className="accounting-totals">
+      <div><dt>{t("Total cost")}</dt><dd><Amt lang={lang} value={cost}/></dd></div>
+      <div><dt>{t("Total selling value")}</dt><dd><Amt lang={lang} value={selling}/></dd></div>
+    </dl>
+  </Panel>;
+  return <div className="module-grid">
+    {panel("All stock values",totals.cost,totals.selling)}
+    {totals.filtered&&panel("Filtered stock values",totals.filteredCost,totals.filteredSelling)}
+  </div>;
+}
+
 export async function Inventory({lang,forms,query}:ModuleProps){
-  const rows=await parts(query);
+  const filters=inventoryFilters(query);
+  const [rows,totals]=await Promise.all([parts(filters), inventoryValue(filters)]);
   return <><Heading lang={lang} title="Inventory">
     {forms.can("part")&&<ActionForm lang={lang} spec={{...forms.part(),title:"Add product"}} primary auto={query.new==="part"}
       source={{href:"/inventory/price-list",label:"Add from price list"}}/>}
     <Actions lang={lang} forms={forms} specs={[forms.stock()]} auto={query.new} primary={false}/>
   </Heading>
-    <Toolbar lang={lang} path="/inventory" filters={query} category status={["active","archived"]}/>
-    <div className="panel"><Register lang={lang} head={["Code","Part","Category","On hand","Reserved","Available","Cost","Price"]} rows={rows.map((row)=>[
-      <Ref href={"/inventory/"+row.id}>{row.code}</Ref>,<bdi>{row.name}</bdi>,<bdi>{row.category}</bdi>,String(row.onHand),String(row.reserved),
+    <StockValues lang={lang} totals={totals}/>
+    <Toolbar lang={lang} path="/inventory" filters={filters} category status={["active","archived"]}/>
+    <div className="panel"><Register lang={lang} stickyKey head={["Code","Part","Category","On hand","Available","Cost","Price","Total cost","Total selling value"]} rows={rows.map((row)=>[
+      <Ref href={"/inventory/"+row.id}>{row.code}</Ref>,<bdi>{row.name}</bdi>,<bdi>{row.category}</bdi>,String(row.onHand),
       <span className={row.low?"text-amber-400":""}>{row.available} {row.unit}{row.low?" · "+translate(lang,"Low stock"):""}</span>,<Amt lang={lang} value={row.cost}/>,<Amt lang={lang} value={row.price}/>,
-    ])}/></div><Pages lang={lang} path="/inventory" filters={query} count={rows.length}/></>;
+      <Amt lang={lang} value={row.stockCost}/>,<Amt lang={lang} value={row.stockSellingValue}/>,
+    ])}/></div><Pages lang={lang} path="/inventory" filters={filters} count={rows.length}/></>;
 }
 export async function Purchasing({lang,forms,query}:ModuleProps){
   const tr=(key:string)=>translate(lang,key);
@@ -143,28 +163,67 @@ export async function Balances({lang,forms,query}:ModuleProps){
     </div><Pages lang={lang} path="/balances" filters={query} count={Math.max(docs.length,credit.length,allPays.length)}/></>;
 }
 export async function Cash({lang,forms,query}:ModuleProps){
-  const [accounts,expenses]=await Promise.all([cashAccounts(),documents(["expense"],query)]);
+  const selected=cashbookDate(query.date);
+  const [{rows,entries,total},expenses]=await Promise.all([
+    cashbook(selected,query),documents(["expense"],{...query,page:undefined,from:query.from ?? selected,to:query.to ?? selected}),
+  ]);
   const tr=(key:string)=>translate(lang,key);
   const activeAccounts=forms.adapters.accounts.length;
   return <><Heading lang={lang} title="Cash & expenses">
-    <Actions lang={lang} forms={forms} specs={[forms.expense()]} auto={query.new}/>
+    <Actions lang={lang} forms={forms} specs={[activeAccounts>0&&forms.paidExpense(selected)]} auto={query.new}/>
     <ButtonLink href="/cash/transactions">{tr("View transactions")}</ButtonLink>
     {!activeAccounts&&<CashAccountSetup lang={lang} canManage={forms.can("account")}/>}
   </Heading>
-    <Toolbar lang={lang} path="/cash" filters={query} dateRange category/>
-    <div className="module-grid">
-      <Panel title={tr("Cash accounts")}><Register lang={lang} head={["Account","Type","Balance"]} rows={accounts.map((row)=>[
-        <bdi>{row.name}</bdi>,label(lang,row.kind),<Amt lang={lang} value={row.balance}/>,
-      ])}/></Panel>
+    <div className="detail-stack">
+      <Panel title={tr("Daily cashbook")}>
+        <Form key={selected+query.account} action="/cash" prefetch={false} className="toolbar">
+          <label className="accounting-filter">{tr("Date")}<input name="date" type="date" required defaultValue={selected} max={today()}/></label>
+          <label className="accounting-filter">{tr("Account")}<select name="account" defaultValue={query.account ?? ""}>
+            <option value="">{tr("All accounts")}</option>
+            {rows.map((row)=><option key={row.id} value={row.id}>{accountName(row)}</option>)}
+          </select></label>
+          <button type="submit" className="button secondary">{tr("Filter")}</button>
+        </Form>
+        <dl className="accounting-totals">
+          <div><dt>{tr("Total across accounts")}</dt><dd><Amt lang={lang} value={total}/></dd></div>
+        </dl>
+        <Register lang={lang} stickyKey head={["Account","Type","Opening balance","Money in","Money out","Closing balance"]} rows={rows.map((row)=>[
+          <Ref href={"/cash?date="+selected+"&account="+encodeURIComponent(row.id)+"#cashbook-movements"}>{accountName(row)}</Ref>,
+          accountTypeName(lang,row.kind),<Amt lang={lang} value={row.opening}/>,<Amt lang={lang} value={row.incoming}/>,
+          <Amt lang={lang} value={row.outgoing}/>,<Amt lang={lang} value={row.closing}/>,
+        ])}/>
+      </Panel>
       {activeAccounts>0&&forms.can("payment")&&<details className="log-optional">
         <summary>{tr("More actions")}<ChevronDown size={15} aria-hidden="true"/></summary>
         <div className="detail-copy page-actions"><Actions lang={lang} forms={forms} specs={[
           activeAccounts>1&&forms.cashMovement("transfer"),forms.cashMovement("contribution"),forms.cashMovement("withdrawal"),
         ]} primary={false}/></div>
       </details>}
-      <Panel title={tr("Expenses")}><DocRegister lang={lang} docs={expenses}/></Panel>
+      <div id="cashbook-movements">
+        <Panel title={tr("Money movements")}>
+          <Register lang={lang} stickyKey head={["Number","Type","Account","Payment method","Details","Money in","Money out"]} rows={entries.map((row)=>{
+            const {payment}=row;
+            const docs=[...new Map(payment.allocations.filter(({releasedAt})=>!releasedAt || releasedAt>=row.at)
+              .map(({document})=>[document.id,document])).values()];
+            return [
+              <Ref href={"/payment/"+payment.id}>{payment.number}</Ref>,
+              row.reversal ? label(lang,"reversePayment") : label(lang,payment.kind),<bdi>{accountName(row.account)}</bdi>,label(lang,payment.method),
+              <div className="accounting-entries">
+                <bdi>{payment.party?.name || payment.employee?.name || docs.find(doc=>doc.kind==="expense")?.reference}</bdi>
+                {payment.note && <bdi>{payment.note}</bdi>}
+                {docs.map(doc=><Ref key={doc.id} href={"/record/"+doc.id}>{doc.number}{doc.kind==="expense" && " · "+doc.title}</Ref>)}
+              </div>,
+              row.amount>0n?<Amt lang={lang} value={row.amount}/>:null,row.amount<0n?<Amt lang={lang} value={-row.amount}/>:null,
+            ];
+          })}/>
+        </Panel>
+        <Pages lang={lang} path="/cash" filters={{...query,date:selected}} count={entries.length}/>
+      </div>
+      <Panel title={tr("Expenses")}>
+        <Actions lang={lang} forms={forms} specs={[forms.expense()]} auto={query.new} primary={false}/>
+        <DocRegister lang={lang} docs={expenses}/>
+      </Panel>
     </div>
-    <Pages lang={lang} path="/cash" filters={query} count={expenses.length}/>
   </>;
 }
 export async function CashTransactions({lang,query,role}:Omit<ModuleProps,"forms">&{role:Role}){
@@ -180,7 +239,7 @@ export async function CashTransactions({lang,query,role}:Omit<ModuleProps,"forms
   </Heading>
     <Toolbar lang={lang} path={path} filters={query} dateRange
       party={parties.map(({id,name})=>({value:id,name}))} paymentKinds={Object.values(PaymentKind)}/>
-    <Panel title={tr("Money movements")}><PayRegister lang={lang} rows={rows}/></Panel>
+    <Panel title={tr("Money movements")}><PayRegister lang={lang} rows={rows} showAccounts/></Panel>
     <Pages lang={lang} path={path} filters={query} count={rows.length}/>
   </>;
 }
@@ -213,7 +272,7 @@ export async function Settings({lang,forms,query}:ModuleProps){
     specs={[forms.settings(business,prefixes),forms.catalogue(),forms.user(),manageAccounts&&forms.account()]} auto={query.new}/></Heading>
     <div className="module-grid"><Info lang={lang} title="Business settings" items={[["Business name",business.name ?? "VAG Engineering"],["Phone",business.phone],["Address",business.address],["Invoice footer",business.footer],["Date format",label(lang,business.dateFormat ?? "medium")],["Workshop photos",tr(workshopPhotosEnabled(business) ? "On" : "Off")]]}/>
       {manageAccounts&&<Panel title={tr("Cash accounts")}><Register lang={lang} head={["Account","Type","Status","Action"]} rows={accounts.map((row)=>[
-        <bdi>{row.name}</bdi>,label(lang,row.kind),tr(row.archived?"Archived":"Active"),<ActionForm lang={lang} spec={forms.account(row)}/>,
+        <bdi>{accountName(row)}</bdi>,accountTypeName(lang,row.kind),tr(row.archived?"Archived":"Active"),<ActionForm lang={lang} spec={forms.account(row)}/>,
       ])}/></Panel>}
       <Panel title={tr("Catalogue")}><Register lang={lang} head={["Type","Name","Description","Price","Action"]} rows={plain(catalogue).map((row)=>[
         label(lang,row.group),<bdi>{row.name}</bdi>,<bdi>{row.description}</bdi>,<Amt lang={lang} value={row.price}/>,forms.can("catalogue")?<ActionForm lang={lang} spec={forms.catalogue(row)}/>:null,
@@ -235,32 +294,41 @@ export async function Audit({lang,query}:ModuleProps){
         <small>{translate(lang,"After")}</small><pre dir="ltr" className="max-w-96 whitespace-pre-wrap break-all">{JSON.stringify(row.after,null,2)}</pre></details>,
     ])}/></div><Pages lang={lang} path="/audit" filters={query} count={rows.length}/></>;
 }
-const reports:Record<string,{label:string;kinds?:DocumentKind[]}>={
-  sales:{label:"Invoiced sales",kinds:["invoice","credit"]},purchases:{label:"Purchases",kinds:["purchase","supplierCredit"]},
-  debts:{label:"Document balances",kinds:["invoice","purchase","customerOpening","supplierOpening"]},expenses:{label:"Expenses",kinds:["expense"]},
-  payroll:{label:"Employees & payroll",kinds:["payroll","employeeOpening","advanceOpening"]},stock:{label:"Stock"},
+const reports:Record<string,string>={
+  sales:"Invoiced sales",purchases:"Purchases",debts:"Document balances",expenses:"Expenses",payroll:"Employees & payroll",stock:"Stock",
 };
 export async function Reports({lang,forms,query}:ModuleProps){
   const tr=(key:string)=>translate(lang,key);
   const report=Object.hasOwn(reports,query.report ?? "")?query.report!:"sales";
-  const config=reports[report];
-  const [summary,rows,stock]=await Promise.all([
-    ledgerSummary(query),config.kinds?documents(config.kinds,{...query,status:"posted"}):[],
-    report==="stock"?parts(query):[],
+  const filters=reportFilters(report,query);
+  const kinds=reportDocumentKinds[report];
+  const [summary,rows,stock,valuation,cash]=await Promise.all([
+    kinds && report!=="debts" ? reportDocumentSummary(report,filters) : null,
+    kinds?documents(kinds,filters):[],
+    report==="stock"?parts(filters):[],
+    report==="stock"?inventoryValue(filters):null,
+    reportCashSummary(report,filters),
   ]);
-  const saleLines=report==="sales"?await db.line.findMany({where:{documentId:{in:rows.map((row)=>row.id)}},include:{document:{select:{id:true,number:true}}},orderBy:[{documentId:"asc"},{position:"asc"}]}):[]; return <><Heading lang={lang} title="Reports">{forms.can("export")&&<ExportLink lang={lang} report={report} filters={query}/>}</Heading>
-    <div className="page-actions mb-3">{Object.entries(reports).map(([key,item])=><Link key={key} className={"button "+(key===report?"primary":"secondary")} href={"/reports?report="+key}>{tr(item.label)}</Link>)}</div>
-    <Toolbar lang={lang} path="/reports" filters={query} report={report} dateRange party={[...forms.adapters.customer,...forms.adapters.supplier]} staff={report==="payroll"?forms.adapters.staff:undefined} category/>
-    <div className="module-grid"><Info lang={lang} title="Financial summary" items={[
-      ["Invoiced",<Amt lang={lang} value={summary.sales}/>],["Posted credits",<Amt lang={lang} value={summary.credits}/>],
-      ["Collected",<Amt lang={lang} value={summary.collections}/>],["Paid out",<Amt lang={lang} value={summary.paid}/>],
-      ["Stock cost of sales",<Amt lang={lang} value={summary.cost}/>],["Gross margin",<Amt lang={lang} value={summary.margin}/>],["Operating expenses",<Amt lang={lang} value={summary.expenses}/>],
-    ]}/>
-    <Panel title={tr(config.label)}>{report==="stock"?<Register lang={lang} head={["Code","Part","On hand","Reserved","Available","Cost"]} rows={stock.map((row)=>[
-      <Ref href={"/inventory/"+row.id}>{row.code}</Ref>,row.name,String(row.onHand),String(row.reserved),row.available,<Amt lang={lang} value={row.cost}/>,
+  const saleLines=report==="sales"?await db.line.findMany({where:{documentId:{in:rows.map((row)=>row.id)}},include:{document:{select:{id:true,number:true}}},orderBy:[{documentId:"asc"},{position:"asc"}]}):[];
+  const summaryItems:[string,bigint][] = !summary ? [] : report==="sales"
+    ? [["Invoiced",summary.sales],["Posted credits",summary.credits],["Stock cost of sales",summary.cost],["Gross margin",summary.margin]]
+    : report==="purchases" ? [["Purchases",summary.purchases],["Posted credits",summary.supplierCredits]]
+    : report==="expenses" ? [["Operating expenses",summary.expenses]] : [["Payroll posted",summary.payroll]];
+  const parties=report==="sales" ? forms.adapters.customer : report==="purchases" ? forms.adapters.supplier
+    : report==="debts" ? [...forms.adapters.customer,...forms.adapters.supplier] : undefined;
+  return <><Heading lang={lang} title="Reports">{forms.can("export")&&<ExportLink lang={lang} report={report} filters={filters}/>}</Heading>
+    <div className="page-actions mb-3">{Object.entries(reports).map(([key,name])=><Link key={key} className={"button "+(key===report?"primary":"secondary")} href={"/reports?report="+key}>{tr(name)}</Link>)}</div>
+    <Toolbar lang={lang} path="/reports" filters={filters} report={report} dateRange={report!=="stock"} party={parties}
+      staff={report==="payroll"?forms.adapters.staff:undefined} category status={report==="stock"?["active","archived"]:undefined}/>
+    {valuation&&<StockValues lang={lang} totals={valuation}/>}
+    <div className="module-grid"><Info lang={lang} title="Financial summary" items={summaryItems.map(([title,value])=>[title,<Amt lang={lang} value={value}/>])}/>
+    {cash!==null&&<Info lang={lang} title="Cash activity" items={[[report==="sales"?"Collected":"Paid out",<Amt lang={lang} value={cash}/>]]}/>}
+    <Panel title={tr(reports[report])}>{report==="stock"?<Register lang={lang} stickyKey head={["Code","Part","On hand","Available","Cost","Price","Total cost","Total selling value"]} rows={stock.map((row)=>[
+      <Ref href={"/inventory/"+row.id}>{row.code}</Ref>,row.name,String(row.onHand),row.available,<Amt lang={lang} value={row.cost}/>,
+      <Amt lang={lang} value={row.price}/>,<Amt lang={lang} value={row.stockCost}/>,<Amt lang={lang} value={row.stockSellingValue}/>,
     ])}/>:<DocRegister lang={lang} docs={rows}/>}</Panel>
     {report==="sales"&&<Panel title={tr("Line items")}><Register lang={lang} head={["Number","Type","Description","Quantity","Total","Cost"]} rows={saleLines.map((line)=>[<Ref href={"/record/"+line.document.id}>{line.document.number}</Ref>,label(lang,line.kind),<bdi>{line.description}</bdi>,String(line.quantity),<Amt lang={lang} value={line.total}/>,<Amt lang={lang} value={line.costTotal}/>])}/></Panel>}
-    </div><Pages lang={lang} path="/reports" filters={query} report={report} count={Math.max(rows.length,stock.length)}/></>;
+    </div><Pages lang={lang} path="/reports" filters={filters} report={report} count={Math.max(rows.length,stock.length)}/></>;
 }
 export async function SearchResults({lang,forms,query}:ModuleProps){
   const q=query.q?.trim().slice(0,100);

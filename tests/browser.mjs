@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { browserFixtures, launchEdge } from "./support/browser.mjs";
+import { browserFixtures, launchBrowser } from "./support/browser.mjs";
 
 const base = process.env.TEST_URL;
 if (!base) throw Error("Set TEST_URL to the isolated demo instance.");
-const browser = await launchEdge();
+const browser = await launchBrowser();
 const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
 const fixture = browserFixtures(page, base);
 const errors = [];
@@ -76,19 +76,19 @@ try {
   await page.getByRole("button", { name: "New job", exact: true }).click();
   const newJob = page.getByRole("dialog", { name: "New job", exact: true });
   await newJob.getByRole("combobox", { name: "Customer", exact: true }).selectOption(jobParty);
-  await newJob.getByRole("combobox", { name: "Car", exact: true }).selectOption({ label: "Golf · Silver" });
+  await newJob.getByRole("combobox", { name: "Car", exact: true }).selectOption({ label: "Golf Silver" });
   assert.equal(await newJob.getByRole("combobox", { name: "Car", exact: true }).inputValue(), jobCar);
   await newJob.getByRole("radio", { name: /Car stays at the shop/ }).check();
   await newJob.getByLabel("Received by").fill("Mona " + code);
   await newJob.getByLabel("Date received").fill("2025-11-17");
-  await newJob.getByRole("checkbox", { name: "Repair", exact: true }).check();
-  await newJob.getByLabel("Details for Repair").fill("Troubleshoot an intermittent electrical issue");
+  await newJob.getByRole("checkbox", { name: "Diagnostics", exact: true }).check();
+  await newJob.getByLabel("Details for Diagnostics").fill("Troubleshoot an intermittent electrical issue");
   assert.equal(await newJob.getByLabel("Delivery date").count(), 0);
   await newJob.getByRole("button", { name: "Save job", exact: true }).click();
-  await page.getByRole("heading", { name: "Repair", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Diagnostics", exact: true }).waitFor();
   const stayPath = new URL(page.url()).pathname;
   await page.getByText("Mona " + code, { exact: true }).waitFor();
-  await page.getByRole("link", { name: "Golf · Silver", exact: true }).waitFor();
+  await page.getByRole("link", { name: "Golf Silver", exact: true }).waitFor();
   await page.getByText("In progress", { exact: true }).waitFor();
   assert.equal(await page.getByText("Delivery date", { exact: true }).count(), 0);
   assert.equal(await page.getByRole("button", { name: "Record a receipt", exact: true }).count(), 0);
@@ -106,14 +106,23 @@ try {
   await finish.getByLabel("Delivery date").fill("2025-11-19");
   await finish.getByRole("button", { name: "Save and take payment" }).click();
   const stayReceipt = page.getByRole("dialog", { name: "Create invoice and take payment" });
-  await stayReceipt.getByLabel("Price for Repair").fill("450");
-  await stayReceipt.getByLabel("Amount to apply (EGP)").fill("150");
-  await stayReceipt.getByLabel("Cash handed over (EGP)").fill("200");
-  await stayReceipt.getByLabel("Money received in").selectOption({ label: "Workshop cash" });
+  await stayReceipt.getByLabel("Price for Diagnostics").fill("450");
+  await stayReceipt.getByLabel("Discount (EGP)").fill("50");
+  assert.match(await stayReceipt.getByLabel("Invoice total").innerText(),/400\.00/);
+  await stayReceipt.getByLabel("Amount paid (EGP)").fill("150");
+  const receiveVia=stayReceipt.getByLabel("Receive payment via");
+  assert.equal(await stayReceipt.getByLabel("Cash handed over (EGP)").count(),0);
+  await receiveVia.selectOption({ label: "Cash · Workshop cash" });
   await stayReceipt.getByRole("button", { name: "Save invoice and receipt", exact: true }).click();
   await page.waitForURL("**/payment/**");
   await page.locator(".receipt-details").getByText("Troubleshoot an intermittent electrical issue", { exact: true }).waitFor();
-  assert.match(await page.locator(".receipt-totals").innerText(), /Change given\s*EGP\s*50\.00/);
+  const firstReceiptTotals=await page.locator(".receipt-totals").innerText();
+  assert.match(firstReceiptTotals,/Discount\s*EGP\s*50\.00/);
+  assert.match(firstReceiptTotals,/Total\s*EGP\s*400\.00/);
+  assert.match(firstReceiptTotals,/Paid\s*EGP\s*150\.00/);
+  assert.doesNotMatch(firstReceiptTotals,/Change given/);
+  await page.goto(base+"/debts?"+new URLSearchParams({q:"Job billing "+code}));
+  assert.match(await page.locator(".debtor-balance").innerText(),/250\.00/);
   await page.goto(base + stayPath);
   await page.getByText("Delivered", { exact: true }).waitFor();
   await page.getByText("19 Nov 2025", { exact: true }).waitFor();
@@ -121,9 +130,14 @@ try {
   await page.waitForURL("**/record/**");
   await page.getByRole("button", { name: "Record a receipt", exact: true }).click();
   const remainder = page.getByRole("dialog", { name: "Record a receipt" });
-  assert.equal(await remainder.getByLabel("Amount to apply (EGP)").inputValue(), "300.00");
+  assert.equal(await remainder.getByLabel("Amount paid (EGP)").inputValue(), "250.00");
+  await remainder.getByLabel("Receive payment via").selectOption({label:"Card · M1"});
   await remainder.getByRole("button", { name: "Save receipt", exact: true }).click();
   await page.waitForURL("**/payment/**");
+  const cardReceiptNumber=await page.getByRole("heading",{name:/^RCT-/}).innerText();
+  assert.equal(await page.getByText("M1",{exact:true}).count(),0);
+  await page.goto(base+"/cash/transactions?"+new URLSearchParams({q:cardReceiptNumber}));
+  await page.getByRole("cell",{name:"M1",exact:true}).waitFor();
   await page.goto(base + stayPath);
   assert.equal(await page.getByRole("button", { name: "Record a receipt", exact: true }).count(), 0);
   await page.goto(base + "/jobs/history?" + new URLSearchParams({ q: code }));
@@ -218,12 +232,12 @@ try {
   await visit.getByLabel("ملاحظات").fill("راجعنا قراءات البوست بعد البرمجة");
   await visit.getByRole("button", { name: "احفظ وسجّل الدفع" }).click();
   await visit.getByRole("alert").getByText("اختار نوع شغل واحد على الأقل.").waitFor();
-  const serviceNames = ["صيانة", "تعديل وبرمجة", "كشف أعطال", "تصليح", "تركيب قطع غيار", "فحص", "شغل تاني"];
+  const serviceNames = ["تركيب قطع غيار", "صيانة دورية", "كشف أعطال", "شغل تاني", "سوفت تيون", "فحص"];
   for (const service of serviceNames) await visit.getByRole("checkbox", { name: service, exact: true }).check();
   const maintenance = "غيرنا زيت الموتور وراجعنا الوصلات";
   const tune = "ظبطنا Stage 1 وراجعنا قراءات البوست";
-  await visit.getByLabel("تفاصيل صيانة", { exact: true }).fill(maintenance);
-  await visit.getByLabel("تفاصيل تعديل وبرمجة", { exact: true }).fill(tune);
+  await visit.getByLabel("تفاصيل صيانة دورية", { exact: true }).fill(maintenance);
+  await visit.getByLabel("تفاصيل سوفت تيون", { exact: true }).fill(tune);
   const partFields = visit.getByRole("group", { name: "القطع المستخدمة" });
   await partFields.getByRole("button", { name: "إضافة قطعة" }).click();
   const sparkPlug = partFields.getByRole("button", { name: new RegExp("Spark plug kit " + code) });
@@ -242,7 +256,7 @@ try {
   await page.screenshot({ path: proofs + "/visit-eg-phone.png", fullPage: true, caret: "initial" });
   await visit.getByRole("button", { name: "احفظ وسجّل الدفع" }).click();
   const quickReceipt = page.getByRole("dialog", { name: "اعمل الفاتورة وسجّل الدفع" });
-  await quickReceipt.getByLabel("سعر صيانة", { exact: true }).waitFor();
+  await quickReceipt.getByLabel("سعر صيانة دورية", { exact: true }).waitFor();
   await quickReceipt.getByRole("button", { name: "إلغاء", exact: true }).click();
   await page.getByRole("heading", { name: serviceNames.join("، "), exact: true }).waitFor();
   const quickPath = new URL(page.url()).pathname;
@@ -253,7 +267,7 @@ try {
   await page.getByRole("button", { name: "عدّل الشغل" }).click();
   const edit = page.getByRole("dialog", { name: "عدّل الشغل" });
   for (const service of serviceNames) assert.ok(await edit.getByRole("checkbox", { name: service, exact: true }).isChecked());
-  assert.equal(await edit.getByLabel("تفاصيل صيانة", { exact: true }).inputValue(), maintenance);
+  assert.equal(await edit.getByLabel("تفاصيل صيانة دورية", { exact: true }).inputValue(), maintenance);
   assert.equal(await edit.getByLabel("الكمية", { exact: true }).inputValue(), "2");
   await edit.getByRole("button", { name: "إلغاء" }).click();
   const visitUrl = page.url();
@@ -261,7 +275,7 @@ try {
   const priceForm = page.getByRole("dialog", { name: "اعمل فاتورة" });
   await priceForm.getByRole("button", { name: "احفظ الفاتورة" }).click();
   await priceForm.getByRole("alert").getByText("اكتب سعر كل شغل اتعمل. لو الشغل ببلاش، اكتب ٠.").waitFor();
-  const servicePrices = ["٣٠٠٫٢٥", "٣٩٩٫٧٥", "٠", "٠", "٠", "٠", "٠"];
+  const servicePrices = ["٠", "٣٠٠٫٢٥", "٠", "٠", "٣٩٩٫٧٥", "٠"];
   for (const [index, service] of serviceNames.entries()) {
     await priceForm.getByLabel("سعر " + service, { exact: true }).fill(servicePrices[index]);
   }
@@ -270,6 +284,9 @@ try {
   assert.match(await parts.innerText(), /٢٧٥٫٠٠/);
   assert.match(await parts.innerText(), /٥٥٠٫٠٠/);
   assert.match(await priceForm.getByLabel("إجمالي الفاتورة", { exact: true }).innerText(), /١٬٢٥٠٫٠٠/);
+  await priceForm.getByLabel("الخصم (جنيه)",{exact:true}).fill("٥٠٫٥٠");
+  assert.match(await priceForm.getByLabel("إجمالي الفاتورة",{exact:true}).innerText(),/١٬١٩٩٫٥٠/);
+  await priceForm.getByLabel("الخصم (جنيه)",{exact:true}).clear();
   assert.ok(await priceForm.evaluate((element) => element.scrollWidth <= element.clientWidth));
   await page.screenshot({ path: proofs + "/invoice-form-eg-phone.png", caret: "initial" });
   await priceForm.getByRole("button", { name: "احفظ الفاتورة" }).click();
@@ -278,9 +295,9 @@ try {
   await page.goto(visitUrl);
   await page.getByRole("button", { name: "سجّل إيصال" }).click();
   const receipt = page.getByRole("dialog", { name: "سجّل إيصال" });
-  assert.equal(await receipt.getByLabel("سعر صيانة", { exact: true }).count(), 0);
-  await receipt.getByLabel("المبلغ اللي هيتخصم (جنيه)").fill("٤٥٠");
-  await receipt.getByLabel("الفلوس دخلت أنهي حساب؟").selectOption({ label: "Workshop cash" });
+  assert.equal(await receipt.getByLabel("سعر صيانة دورية", { exact: true }).count(), 0);
+  await receipt.getByLabel("المبلغ المدفوع (جنيه)").fill("٤٥٠");
+  await receipt.getByLabel("استلام الدفع عن طريق").selectOption({ label: "نقدي · Workshop cash" });
   await receipt.getByRole("button", { name: "احفظ الإيصال" }).click();
   await page.waitForURL("**/payment/**");
   const receiptDetails = page.locator(".receipt-details");
@@ -299,15 +316,15 @@ try {
   assert.match(await debtor.locator(".debtor-balance").innerText(), /٨٠٠٫٠٠/);
   await debtor.getByRole("button", { name: "سجّل دفعة" }).click();
   const debt = page.getByRole("dialog", { name: "سجّل دفعة من الحساب" });
-  const debtAmount = debt.getByLabel("المبلغ اللي هيتخصم (جنيه)");
+  const debtAmount = debt.getByLabel("المبلغ المدفوع (جنيه)");
   assert.equal(await debt.locator(".payment-summary-customer").innerText(), name);
   assert.ok(await debtAmount.evaluate((element) => document.activeElement === element));
-  assert.equal(await debt.getByLabel("الفلوس دخلت أنهي حساب؟").isVisible(), false);
+  await debt.getByLabel("استلام الدفع عن طريق").waitFor();
   await debtAmount.fill("٩٠٠");
   await debt.getByRole("button", { name: "احفظ الدفعة" }).click();
   await debt.getByRole("alert").getByText("اكتب مبلغ مايزيدش عن الباقي على العميل.").waitFor();
   await debtAmount.fill("٣٠٠");
-  await debt.getByLabel("الكاش اللي استلمته (جنيه)").fill("٣٥٠");
+  assert.equal(await debt.getByLabel("الكاش اللي استلمته قبل الفكة (جنيه)").count(),0);
   await page.screenshot({ path: proofs + "/debt-payment-eg-phone.png", caret: "initial" });
   await debt.getByRole("button", { name: "احفظ الدفعة" }).click();
   const receiptLink = page.getByRole("link", { name: "شوف الإيصال" });
@@ -318,25 +335,24 @@ try {
   const debtListUrl = page.url();
   await receiptLink.click();
   await page.waitForURL("**/payment/**");
-  assert.match(await page.locator(".receipt-totals").innerText(), /٥٠٫٠٠/);
+  assert.match(await page.locator(".receipt-totals dd").last().innerText(), /٣٠٠٫٠٠/);
   const installmentUrl = page.url();
   await page.getByRole("link", { name: "اطبع الإيصال" }).click();
   for (const language of ["eg", "en"]) {
     if (language === "en") await page.getByRole("link", { name: "English", exact: true }).click();
     const sheet = page.locator(".print-sheet[dir='" + (language === "eg" ? "rtl" : "ltr") + "']");
-    const [servicePrice, unitPrice, partPrice, total, paid, change] = language === "eg"
-      ? [/٣٠٠٫٢٥/, /٢٧٥٫٠٠/, /٥٥٠٫٠٠/, /١٬٢٥٠٫٠٠/, /٣٥٠٫٠٠/, /٥٠٫٠٠/]
-      : [/300\.25/, /275\.00/, /550\.00/, /1,250\.00/, /350\.00/, /50\.00/];
+    const [servicePrice, unitPrice, partPrice, total, paid] = language === "eg"
+      ? [/٣٠٠٫٢٥/, /٢٧٥٫٠٠/, /٥٥٠٫٠٠/, /١٬٢٥٠٫٠٠/, /٣٠٠٫٠٠/]
+      : [/300\.25/, /275\.00/, /550\.00/, /1,250\.00/, /300\.00/];
     assert.match(await sheet.getByRole("row").filter({ hasText: maintenance }).innerText(), servicePrice);
     await sheet.getByText(tune, { exact: true }).waitFor();
     const partRow = sheet.getByRole("row").filter({ hasText: code + " · Spark plug kit" });
     assert.match(await partRow.innerText(), unitPrice);
     assert.match(await partRow.innerText(), partPrice);
     const summary = await sheet.locator(".receipt-totals dd").allTextContents();
-    assert.equal(summary.length, 3);
+    assert.equal(summary.length, 2);
     assert.match(summary[0], total);
     assert.match(summary[1], paid);
-    assert.match(summary[2], change);
     await page.emulateMedia({ media: "print" });
     const pdf = await page.pdf({ path: proofs + "/itemized-receipt-" + language + ".pdf", preferCSSPageSize: true });
     assert.match(pdf.toString("latin1"), /\/MediaBox \[0 0 59[45](?:\.\d+)? 84[12](?:\.\d+)?\]/);
@@ -371,10 +387,11 @@ try {
     await page.emulateMedia({media:null});
   }
   await page.goto(visitUrl);
-  await page.locator(".log-details").getByRole("link", { name: /Volkswagen Golf GTI.*أبيض/ }).click();
-  await page.getByRole("heading", { name: "Volkswagen Golf GTI · أبيض", exact: true }).waitFor();
+  await page.locator(".log-details").getByRole("link", { name: /Golf GTI أبيض/ }).click();
+  await page.getByRole("heading", { name: "Golf GTI أبيض", exact: true }).waitFor();
+  await page.locator(".log-details").getByText("Volkswagen",{exact:true}).waitFor();
   await page.getByRole("heading", { name: "الشغل اللي اتعمل" }).waitFor();
-  await page.getByRole("link", { name: /صيانة، تعديل وبرمجة/ }).waitFor();
+  await page.getByRole("link", { name: /صيانة دورية.*سوفت تيون/ }).waitFor();
   assert.ok(await horizontal());
   await page.getByRole("textbox", { name: "دوّر في دفتر الورشة" }).fill("01012001301");
   await page.getByRole("textbox", { name: "دوّر في دفتر الورشة" }).press("Enter");
@@ -387,7 +404,7 @@ try {
   await page.getByText("مفيش عميل عليه فلوس مطابق للبحث", { exact: true }).waitFor();
   assert.equal(await debtor.count(), 0);
   await receiptLink.click();
-  assert.match(await page.locator(".receipt-totals dd").last().innerText(), /٠٫٠٠/);
+  assert.match(await page.locator(".receipt-totals dd").last().innerText(), /٥٠٠٫٠٠/);
   assert.deepEqual(errors, []);
   console.log("PASS Jobs startup, job intake, open and delivered views, English desktop and Egyptian Arabic mobile, billing, debts, and bilingual print.");
 } finally { await browser.close(); }

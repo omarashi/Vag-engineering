@@ -7,13 +7,13 @@ import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { devices } from "../data/tooling/node_modules/playwright-core/index.mjs";
 import { workshopPhotoMaxBytes as maxBytes, workshopPhotoMaxMegabytes } from "../lib/workshop-photo-limits.ts";
-import { browserFixtures, launchEdge } from "./support/browser.mjs";
+import { browserFixtures, launchBrowser } from "./support/browser.mjs";
 
 const base = process.env.TEST_URL;
 const database = new URL(process.env.DATABASE_URL);
 if (!base || !database.pathname.endsWith("_test")) throw Error("Use the isolated test instance and database.");
 const db = new PrismaClient({ adapter: new PrismaPg({ connectionString: database.href }) });
-const browser = await launchEdge();
+const browser = await launchBrowser();
 const page = await browser.newPage(devices["Pixel 7"]);
 const fixture = browserFixtures(page, base);
 const directory = await mkdtemp(join(tmpdir(), "vag-photo-test-"));
@@ -35,7 +35,7 @@ try {
   async function fillIntake() {
     await newJob.getByRole("radio", { name: /Car stays at the shop/ }).check();
     await newJob.getByLabel("Received by").fill("Photo tester");
-    await newJob.getByRole("checkbox", { name: "Maintenance", exact: true }).check();
+    await newJob.getByRole("checkbox", { name: "Routine maintenance", exact: true }).check();
   }
   await fillIntake();
   const sample = Buffer.from(await page.evaluate(() => {

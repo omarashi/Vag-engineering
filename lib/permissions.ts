@@ -7,11 +7,11 @@ export const workshopActions = [
 ] as const;
 export const financeActions = [
   "supplier", "employee", "part", "stock", "supplierStock", "supplierQuote", "purchaseOrder", "purchase",
-  "invoice", "visitInvoice", "visitReceipt", "customerDebtPayment", "expense", "opening", "openingFinalize", "payPeriod",
-  "payEntry", "payFinalize", "employeeAbsence", "weeklyPayroll", "credit", "reverseDocument", "payment", "allocate", "unallocate",
+  "invoice", "visitInvoice", "visitReceipt", "customerDebtPayment", "expense", "paidExpense", "opening", "openingFinalize", "payPeriod",
+  "payEntry", "payFinalize", "employeeAbsence", "weeklyPayroll", "resolvePayrollExcess", "credit", "reverseDocument", "payment", "allocate", "unallocate",
   "reversePayment",
 ] as const;
-export const ownerActions = ["settings", "user", "account", "catalogue", "employeeDismiss"] as const;
+export const ownerActions = ["settings", "user", "account", "catalogue", "employeeDismiss", "payReopen"] as const;
 export type Command = typeof workshopActions[number] | typeof financeActions[number] | typeof ownerActions[number];
 export function can(role: Role, action: string) {
   if (action === "export") return role !== "technician";

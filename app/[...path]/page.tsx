@@ -46,7 +46,7 @@ export default async function Page({ params, searchParams }: {
     search: () => id ? notFound() : <LogSearch {...props}/>,
   };
   const officeQuery = Object.fromEntries(
-    ["q","from","to","status","party","staff","category","service","report","new","page","week","paymentKind"].map((key) => [key, read(key)]).filter(([, value]) => value),
+    ["q","from","to","status","party","staff","category","service","report","new","page","week","paymentKind","date","account"].map((key) => [key, read(key)]).filter(([, value]) => value),
   );
   const content = Object.hasOwn(pages, route) ? pages[route as keyof typeof pages]() :
     <OfficePage lang={lang} route={route} id={id} actor={user} query={officeQuery}/>;

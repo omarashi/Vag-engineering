@@ -3,7 +3,7 @@ import { divideHalfUp, normalize, parseMoney } from "./decimal-input";
 
 export { normalize } from "./decimal-input";
 
-export const moneyAccountKinds = ["cash", "bank", "vodafoneCash", "instaPay"] as const;
+export const moneyAccountKinds = ["cash", "bank", "cardTerminal", "vodafoneCash", "instaPay"] as const;
 
 export class RuleError extends Error {
   constructor(public code: string, public status = 422) { super(code); }
@@ -24,12 +24,12 @@ export function needed(input: unknown, max = 180) {
   return value;
 }
 export function cents(input: unknown, signed = false) {
-  const amount = parseMoney(input || "0");
+  const amount = parseMoney(input == null || input === "" ? "0" : input);
   requireRule(amount !== null && (signed || amount >= 0n));
   return amount;
 }
 export function units(input: unknown, signed = false) {
-  const value = normalize(input);
+  const value = normalize(text(input, 16));
   requireRule(/^-?\d{1,9}(\.\d{1,3})?$/.test(value));
   const amount = new Prisma.Decimal(value);
   requireRule(signed || amount.gt(0));
@@ -48,7 +48,7 @@ export function unitAmount(total: bigint, quantity: Prisma.Decimal) {
   return divideHalfUp(total * denominator, numerator);
 }
 export function integer(input: unknown, min: number, max: number) {
-  const value = normalize(input);
+  const value = normalize(text(input, 20));
   requireRule(/^\d+$/.test(value));
   const number = Number(value);
   requireRule(number >= min && number <= max);
@@ -57,9 +57,14 @@ export function integer(input: unknown, min: number, max: number) {
 const cairoDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" });
 const cairoClock = new Intl.DateTimeFormat("en-GB", { timeZone: "Africa/Cairo", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 export function today(at: Date | string = new Date()) { return cairoDate.format(new Date(at)); }
+export function addDays(day: string, offset: number) {
+  const stamp = new Date(day + "T12:00:00Z");
+  stamp.setUTCDate(stamp.getUTCDate() + offset);
+  return stamp.toISOString().slice(0, 10);
+}
 export function date(input: unknown) {
-  if (!input) return new Date();
-  const value = normalize(input);
+  if (input == null || input === "") return new Date();
+  const value = normalize(text(input, 16));
   const stamp = /^\d{4}-\d{2}-\d{2}$/.test(value) ? value + "T12:00" : value;
   requireRule(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(stamp));
   const nominal = Date.parse(stamp + ":00Z");
@@ -69,6 +74,15 @@ export function date(input: unknown) {
     if (today(candidate) + "T" + cairoClock.format(candidate) === stamp) return candidate;
   }
   throw new RuleError("invalidDate");
+}
+export function cairoDayStart(day: string) {
+  try {
+    return date(day + "T00:00");
+  } catch (error) {
+    if (!(error instanceof RuleError)) throw error;
+    // On the spring clock change, the first local hour starts at 01:00.
+    return date(day + "T01:00");
+  }
 }
 export function record(input: unknown) {
   requireRule(input !== null && typeof input === "object" && !Array.isArray(input));

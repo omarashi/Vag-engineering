@@ -1,6 +1,6 @@
 "use client";
 
-import { Languages, Moon, Sun, LogOut, Search, ChevronDown, House, UsersRound, ClipboardList, Wallet, Ellipsis } from "lucide-react";
+import { Languages, Moon, Sun, LogOut, Search, ChevronDown, House, UsersRound, ClipboardList, Wallet, Ellipsis, CarFront, type LucideIcon } from "lucide-react";
 import Link from "./navigation-link";
 import Form from "next/form";
 import Image from "next/image";
@@ -10,13 +10,18 @@ import { translate, type Language } from "@/lib/locale";
 import type { Role } from "@prisma/client";
 import { canViewPage } from "@/lib/permissions";
 
-const navigation = [
+type NavItem = readonly [string, string, LucideIcon];
+const navigation: readonly NavItem[] = [
   ["overview", "Home", House],
   ["customers", "Customers", UsersRound],
   ["jobs", "Jobs", ClipboardList],
   ["debts", "Debts", Wallet],
   ["more", "More", Ellipsis],
 ] as const;
+const technicianNavigation: readonly NavItem[] = [
+  ...navigation.filter(([path]) => path !== "more"),
+  ["vehicles", "Cars", CarFront],
+];
 
 export function Mark({ lang }: { lang: Language }) {
   return <div className="mark"><Image src="/brand.jpg" alt="" width={36} height={36}/><div>
@@ -46,8 +51,10 @@ export function Shell({ lang, theme, user, demo, children }: {
 }) {
   const pathname = usePathname();
   const route = pathname.split("/")[1];
-  const visibleNavigation = navigation.filter(([path]) => canViewPage(user.role, path));
-  const active = visibleNavigation.some(([path]) => path === route) ? route : route === "search" ? "" : "more";
+  const visibleNavigation = (user.role === "technician" ? technicianNavigation : navigation)
+    .filter(([path]) => canViewPage(user.role, path));
+  const active = visibleNavigation.some(([path]) => path === route) ? route
+    : route === "search" ? "" : user.role === "technician" ? "vehicles" : "more";
   const [profile, setProfile] = useState(false);
   const [logoutError, setLogoutError] = useState(false);
   const t = (key: string) => translate(lang, key);

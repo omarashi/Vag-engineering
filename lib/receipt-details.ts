@@ -2,7 +2,7 @@ import { db } from "./db";
 import type { payments } from "./views";
 
 type Receipt = Awaited<ReturnType<typeof payments>>[number];
-type Snapshot = { receiptTotal?: unknown; cashTendered?: unknown };
+type Snapshot = { receiptTotal?: unknown };
 
 function minorUnitsInSnapshot(value: unknown) {
   return typeof value === "string" && /^\d+$/.test(value) ? BigInt(value) : null;
@@ -27,8 +27,6 @@ export async function receiptDetails(row: Receipt) {
   const amount = BigInt(row.amount);
   const total = minorUnitsInSnapshot(snapshot?.receiptTotal)
     ?? (documents.length ? documents.reduce((sum, document) => sum + document.total, 0n) : amount);
-  const tendered = minorUnitsInSnapshot(snapshot?.cashTendered);
-  const paid = tendered !== null && tendered >= amount ? tendered : amount;
-  const changeGiven = row.method === "cash" && (tendered === null || tendered < amount) ? null : paid - amount;
-  return { bills, total, paid, changeGiven };
+  const discount = documents.reduce((sum, document)=>sum+document.lines.reduce((lineSum,line)=>lineSum+line.discount,0n),0n);
+  return { bills, discount, total, paid: amount };
 }

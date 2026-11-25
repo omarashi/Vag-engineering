@@ -1,11 +1,12 @@
 import { PaymentKind, Prisma, type DocumentKind } from "@prisma/client";
 import { db, plain } from "./db";
-import { date, today } from "./rules";
+import { addDays, cairoDayStart, date, extended, RuleError, today } from "./rules";
 import { documentAmountDue, due } from "./trade";
 import { day, label, money, type Language } from "./locale";
 import { workSearch, workServiceFilter } from "./visits";
+import { accountName } from "./payment-options";
 
-export type Filters={q?:string;from?:string;to?:string;status?:string;party?:string;staff?:string;category?:string;vehicle?:string;page?:string;paymentKind?:PaymentKind;service?:string};
+export type Filters={q?:string;from?:string;to?:string;status?:string;party?:string;staff?:string;category?:string;vehicle?:string;page?:string;paymentKind?:PaymentKind;service?:string;date?:string;account?:string};
 export const includes={
   party:true,vehicle:true,employee:true,source:{select:{id:true,number:true,kind:true}},
   assignments:{include:{employee:true}},lines:{orderBy:{position:"asc" as const}},
@@ -18,8 +19,8 @@ const textLike=(q:string)=>({contains:q,mode:"insensitive" as const});
 function interval(filters:Filters){
   let gte:Date|undefined;
   let lt:Date|undefined;
-  try{if(filters.from) gte=date(filters.from+"T00:00");}catch{}
-  try{if(filters.to) lt=new Date(date(filters.to+"T00:00").getTime()+86400000);}catch{}
+  try{if(filters.from) gte=cairoDayStart(filters.from);}catch{}
+  try{if(filters.to) lt=cairoDayStart(addDays(today(cairoDayStart(filters.to)),1));}catch{}
   return {gte,lt};
 }
 function offset(filters:Filters){return Math.min(Math.max(0,Number.parseInt(filters.page ?? "0",10)||0),500)*100;}
@@ -41,17 +42,23 @@ async function documentBalanceTotals(ids:string[]) {
   };
 }
 
-export async function documents(kinds:DocumentKind[],filters:Filters={},options: {detail?:boolean;statuses?:string[];workshop?:boolean;unbilled?:boolean} = {}){
+type DocumentOptions = {detail?:boolean;statuses?:string[];workshop?:boolean;unbilled?:boolean};
+
+function documentWhere(kinds:DocumentKind[],filters:Filters,options:DocumentOptions={}):Prisma.DocumentWhereInput{
   const query=filters.q?.trim().slice(0,100);
   const like=query ? textLike(query) : undefined;
-  const rows=await db.document.findMany({
-    where:{kind:{in:kinds},at:interval(filters),status:options.statuses ? {in:options.statuses,equals:filters.status || undefined} : filters.status || undefined,
+  return {kind:{in:kinds},at:interval(filters),status:options.statuses ? {in:options.statuses,equals:filters.status || undefined} : filters.status || undefined,
       partyId:filters.party || undefined,vehicleId:filters.vehicle || undefined,employeeId:filters.staff || undefined,category:filters.category || undefined,
       AND:options.workshop ? workServiceFilter(filters.service) : undefined,
       related:options.unbilled ? {none:{kind:"invoice",status:"posted"}} : undefined,
       ...(like?{OR:[{number:like},{title:like},{reference:like},{party:{OR:[{name:like},{phone:like}]}},{vehicle:{OR:[{plate:like},{vin:like},{model:like}]}},{employee:{name:like}},
         ...(options.workshop && query ? workSearch(query) : []),
-      ]}:{})},
+      ]}:{})};
+}
+
+export async function documents(kinds:DocumentKind[],filters:Filters={},options:DocumentOptions={}){
+  const rows=await db.document.findMany({
+    where:documentWhere(kinds,filters,options),
     include:options.detail ? includes : {party:true,vehicle:true,employee:true},orderBy:[{at:"desc"},{number:"desc"}],skip:offset(filters),take:100,
   });
   const ids = rows.filter((row)=>row.status==="posted" && financial(row.kind) && !isCredit(row.kind)).map((row)=>row.id);
@@ -80,7 +87,7 @@ export async function payments(filters:Filters={},id?:string,kinds?:PaymentKind[
   return plain(await db.payment.findMany({where:{id,kind:kinds ? {in:kinds} : kind,at:interval(filters),partyId:filters.party || undefined,employeeId:filters.staff || undefined,
     ...(like?{OR:[{number:like},{note:like},{party:{OR:[{name:like},{phone:like}]}},{employee:{name:like}}]}:{})},
     take:id?1:100,skip:id?0:offset(filters),orderBy:[{at:"desc"},{id:"desc"}],
-    include:{party:true,employee:true,movements:{include:{account:true}},allocations:{include:{document:{select:{id:true,number:true,kind:true}}}}}}));
+    include:{party:true,employee:true,movements:{include:{account:true}},allocations:{include:{document:{select:{id:true,number:true,kind:true,metadata:true}}}}}}));
 }
 export async function parties(kind:"customer"|"supplier",filters:Filters={},id?:string){
   const like=filters.q ? textLike(filters.q.slice(0,100)) : undefined;
@@ -96,12 +103,48 @@ export async function vehicles(filters:Filters={},id?:string){
     include:{party:true,...(id?{history:{orderBy:{at:"desc" as const}},attachments:true,documents:{where:{kind:{not:"quote"}},orderBy:{at:"desc" as const}}}:{})},
     orderBy:{createdAt:"desc"},skip:id?0:offset(filters),take:id?1:100}));
 }
+const partSearchFields = ["code","name","oem","brand"] as const;
+
+export function inventoryFilters(filters:Filters):Filters{
+  return {
+    q:filters.q?.trim().slice(0,100) || undefined,
+    status:filters.status==="archived" || filters.status==="active" ? filters.status : undefined,
+    category:filters.category?.trim() || undefined,
+    page:filters.page,
+  };
+}
+
+function inventoryWhere(filters:Filters):Prisma.PartWhereInput{
+  const {q,category,status}=inventoryFilters(filters);
+  return {
+    archived:status ? status==="archived" : undefined,
+    category,
+    OR:q ? partSearchFields.map(field=>({[field]:textLike(q)})) : undefined,
+  };
+}
+
 export async function parts(filters:Filters={},id?:string){
-  const like=filters.q ? textLike(filters.q.slice(0,100)) : undefined;
-  const items=await db.part.findMany({where:{id,archived:filters.status==="archived"?true:filters.status==="active"?false:undefined,
-    category: filters.category || undefined,...(like?{OR:[{code:like},{name:like},{oem:like},{brand:like}]}:{})},
+  const items=await db.part.findMany({where:{id,...inventoryWhere(filters)},
     include:id?{movements:{take:100,orderBy:{at:"desc"},include:{document:{select:{number:true,id:true}}}}}:undefined,orderBy:{name:"asc"},skip:id?0:offset(filters),take:id?1:100});
-  return plain(items.map((row)=>({...row,available:row.onHand.minus(row.reserved).toFixed(),low:row.onHand.minus(row.reserved).lte(row.minimum)})));
+  return plain(items.map((row)=>({...row,available:row.onHand.toFixed(),low:row.onHand.lte(row.minimum),
+    stockCost:extended(row.onHand,row.cost), stockSellingValue:extended(row.onHand,row.price)})));
+}
+export async function inventoryValue(filters:Filters={}){
+  const {q,category,status}=inventoryFilters(filters);
+  const query=q ? "%"+q+"%" : null;
+  const conditions=[
+    ...(category ? [Prisma.sql`category = ${category}`] : []),
+    ...(status ? [Prisma.sql`archived = ${status==="archived"}`] : []),
+    ...(query ? [Prisma.sql`(${Prisma.join(partSearchFields.map(field=>Prisma.sql`${Prisma.raw(field)} ILIKE ${query}`)," OR ")})`] : []),
+  ];
+  const matching=conditions.length ? Prisma.sql`FILTER (WHERE ${Prisma.join(conditions," AND ")})` : Prisma.empty;
+  const [totals] = await db.$queryRaw<Array<{ cost: string; selling: string; filteredCost: string; filteredSelling: string }>>`
+    SELECT COALESCE(SUM(ROUND("onHand" * cost)), 0)::text AS cost,
+           COALESCE(SUM(ROUND("onHand" * price)), 0)::text AS selling,
+           COALESCE(SUM(ROUND("onHand" * cost)) ${matching}, 0)::text AS "filteredCost",
+           COALESCE(SUM(ROUND("onHand" * price)) ${matching}, 0)::text AS "filteredSelling"
+    FROM "Part"`;
+  return { ...totals, filtered:conditions.length>0 };
 }
 export async function selections(){
   const [customers,suppliers,cars,stock,staff,accounts,catalogue,payables,work]=await Promise.all([
@@ -110,18 +153,53 @@ export async function selections(){
     db.vehicle.findMany({where:{archived:false},select:{id:true,partyId:true,make:true,model:true,color:true,plate:true,mileage:true}}),
     db.part.findMany({where:{archived:false},orderBy:{name:"asc"},select:{id:true,name:true,code:true,cost:true,price:true,version:true,onHand:true}}),
     db.employee.findMany({where:{archived:false},orderBy:{name:"asc"},select:{id:true,name:true}}),
-    db.moneyAccount.findMany({where:{archived:false},select:{id:true,name:true,kind:true}}),
+    db.moneyAccount.findMany({where:{archived:false},select:{id:true,name:true,code:true,kind:true}}),
     db.catalog.findMany({where:{archived:false},select:{id:true,name:true,price:true,group:true,description:true},orderBy:{name:"asc"}}),
     db.document.findMany({where:{kind:{in:["invoice","purchase","customerOpening","supplierOpening","credit","supplierCredit","expense","payroll","employeeOpening","advanceOpening"]},status:"posted"},
-      select:{id:true,number:true,total:true,partyId:true,employeeId:true,kind:true},orderBy:{at:"desc"},take:1000}),
+      select:{id:true,number:true,total:true,partyId:true,employeeId:true,kind:true,metadata:true},orderBy:{at:"desc"},take:1000}),
     db.document.findMany({where:{kind:"job",status:{not:"cancelled"}},select:{id:true,number:true,title:true,partyId:true},orderBy:{at:"desc"},take:500}),
   ]);
   return plain({customers,suppliers,cars,stock,staff,accounts,catalogue,payables,work});
 }
-export async function cashAccounts(){
-  const rows=await db.moneyAccount.findMany({orderBy:{name:"asc"}});
-  const sums=await db.cashMovement.groupBy({by:["accountId"],_sum:{amount:true}});
-  return plain(rows.map((row)=>({...row,balance:sums.find((item)=>item.accountId===row.id)?._sum.amount ?? 0n})));
+export function cashbookDate(value?: string) {
+  const now = today();
+  if (!value || value > now) return now;
+  try { return today(cairoDayStart(value)); }
+  catch (error) {
+    if (!(error instanceof RuleError)) throw error;
+    return now;
+  }
+}
+
+export async function cashbook(day: string, filters: { account?: string; page?: string }) {
+  const from = cairoDayStart(day);
+  const to = cairoDayStart(addDays(day, 1));
+  const [accounts, sums, entries] = await db.$transaction([
+    db.moneyAccount.findMany({orderBy:{name:"asc"}}),
+    db.$queryRaw<Array<{ accountId: string; opening: string; incoming: string; outgoing: string }>>`
+      SELECT "accountId",
+             COALESCE(SUM(amount) FILTER (WHERE at < ${from}), 0)::text AS opening,
+             COALESCE(SUM(amount) FILTER (WHERE at >= ${from} AND amount > 0), 0)::text AS incoming,
+             COALESCE(-SUM(amount) FILTER (WHERE at >= ${from} AND amount < 0), 0)::text AS outgoing
+      FROM "CashMovement" WHERE at < ${to} GROUP BY "accountId"`,
+    db.cashMovement.findMany({
+      where:{accountId:filters.account || undefined,at:{gte:from,lt:to}},
+      orderBy:[{at:"desc"},{id:"desc"}],skip:offset(filters),take:100,
+      include:{account:true,payment:{include:{party:true,employee:true,allocations:{include:{
+        document:{select:{id:true,number:true,kind:true,title:true,reference:true}},
+      }}}}},
+    }),
+  ], {isolationLevel:"RepeatableRead"});
+  const byAccount = new Map(sums.map((row) => [row.accountId, row]));
+  const rows = accounts.flatMap((account) => {
+    const sum = byAccount.get(account.id);
+    const opening = BigInt(sum?.opening ?? 0);
+    const incoming = BigInt(sum?.incoming ?? 0);
+    const outgoing = BigInt(sum?.outgoing ?? 0);
+    if (account.archived && opening === 0n && incoming === 0n && outgoing === 0n) return [];
+    return [{ ...account, opening, incoming, outgoing, closing: opening + incoming - outgoing }];
+  });
+  return { rows, entries, total: rows.reduce((sum, row) => sum + row.closing, 0n) };
 }
 export async function ledgerSummary(filters:Filters={}){
   const {gte,lt}=interval(filters);
@@ -179,7 +257,7 @@ export async function overview(){
   const monthStart=date(first+"T00:00");
   const dates=Array.from({length:7},(_,index)=>today(new Date(starts.getTime()-(6-index)*86400000+3600000)));
   const [stock,debt,financial,cash,series]=await Promise.all([
-    db.$queryRaw<Array<{id:string;name:string;code:string;available:string;minimum:string}>>`SELECT id,name,code,("onHand"-reserved)::text AS available,minimum::text FROM "Part" WHERE NOT archived AND "onHand"-reserved<=minimum ORDER BY "onHand"-reserved ASC LIMIT 5`,
+    db.$queryRaw<Array<{id:string;name:string;code:string;available:string;minimum:string}>>`SELECT id,name,code,"onHand"::text AS available,minimum::text FROM "Part" WHERE NOT archived AND "onHand"<=minimum ORDER BY "onHand" ASC LIMIT 5`,
     balances(),ledgerSummary({from:today(monthStart),to:current}),
     db.cashMovement.aggregate({_sum:{amount:true}}),
     db.$queryRaw<Array<{day:string;series:string;amount:bigint}>>`
@@ -210,17 +288,70 @@ export async function statement(id:string){
   let balance=0n;
   return plain({party,rows:ledger.map((row)=>({...row,balance:balance+=row.amount}))});
 }
-export async function reportRows(kind:string,filters:Filters,lang:Language){
+export const reportDocumentKinds:Record<string,DocumentKind[]> = {
+  sales:["invoice","credit"],purchases:["purchase","supplierCredit"],
+  expenses:["expense"],payroll:["payroll","employeeOpening","advanceOpening"],
+  debts:["invoice","customerOpening","purchase","supplierOpening"],
+};
+
+export function reportFilters(kind:string,filters:Filters):Filters{
+  if(kind==="stock") return inventoryFilters(filters);
+  const {q,from,to,party,staff,category,page,paymentKind}=filters;
+  return {
+    q,from,to,page,
+    party:["sales","purchases","debts","payments","statement"].includes(kind) ? party : undefined,
+    staff:kind==="payroll" || kind==="payments" ? staff : undefined,
+    category:Object.hasOwn(reportDocumentKinds,kind) ? category : undefined,
+    paymentKind:kind==="payments" ? paymentKind : undefined,
+    status:"posted",
+  };
+}
+
+export async function reportDocumentSummary(kind:string,filters:Filters){
+  const where=documentWhere(reportDocumentKinds[kind],reportFilters(kind,filters));
+  const [groups,invoiceCost,creditCost]=await Promise.all([
+    db.document.groupBy({by:["kind"],where,_sum:{total:true}}),
+    kind==="sales" ? db.line.aggregate({where:{document:{AND:[where,{kind:"invoice"}]}},_sum:{costTotal:true}}) : null,
+    kind==="sales" ? db.line.aggregate({where:{document:{AND:[where,{kind:"credit"}]},stockQty:{gt:0}},_sum:{costTotal:true}}) : null,
+  ]);
+  const total=(kind:DocumentKind)=>groups.find(row=>row.kind===kind)?._sum.total ?? 0n;
+  const sales=total("invoice");
+  const credits=total("credit");
+  const cost=(invoiceCost?._sum.costTotal ?? 0n)-(creditCost?._sum.costTotal ?? 0n);
+  return {sales,credits,cost,margin:sales-credits-cost,purchases:total("purchase"),supplierCredits:total("supplierCredit"),
+    expenses:total("expense"),payroll:total("payroll")};
+}
+
+const reportPaymentKinds:Record<string,PaymentKind[]> = {
+  sales:["receipt","refund"],purchases:["supplierPayment","supplierRefund"],
+  expenses:["expensePayment"],payroll:["salaryPayment","advance"],
+};
+
+export async function reportCashSummary(kind:string,filters:Filters){
+  const paymentKinds=reportPaymentKinds[kind];
+  if(!paymentKinds || filters.q || filters.category) return null;
+  const result=await db.cashMovement.aggregate({
+    where:{at:interval(filters),payment:{kind:{in:paymentKinds},partyId:filters.party,employeeId:filters.staff}},
+    _sum:{amount:true},
+  });
+  const net=result._sum.amount ?? 0n;
+  return kind==="sales" ? net : -net;
+}
+
+export async function reportRows(kind:string,input:Filters,lang:Language){
+  const filters=reportFilters(kind,input);
   if(kind==="statement" && filters.party){
     const value=await statement(filters.party);
     return value?.rows.map((row)=>[day(lang,row.at),row.number,label(lang,row.kind),money(lang,row.amount),money(lang,row.balance)]) ?? [];
   }
-  if(kind==="stock") return (await parts(filters)).map((row)=>[row.code,row.name,row.category,String(row.onHand),String(row.reserved),row.available,money(lang,row.cost)]);
-  if(kind==="payments") return (await payments(filters)).map((row)=>[row.number,label(lang,row.kind),day(lang,row.at),row.party?.name ?? row.employee?.name ?? "",money(lang,row.amount)]);
-  const map:Record<string,DocumentKind[]>={sales:["invoice","credit"],purchases:["purchase","supplierCredit"],expenses:["expense"],payroll:["payroll","employeeOpening","advanceOpening"],
-    debts:["invoice","customerOpening","purchase","supplierOpening"]};
-  if(!map[kind]) return [];
-  return (await documents(map[kind],filters)).filter((row)=>row.status==="posted").map((row)=>[
+  if(kind==="stock") return (await parts(filters)).map((row)=>[row.code,row.name,row.category,String(row.onHand),row.available,
+    money(lang,row.cost),money(lang,row.price),money(lang,row.stockCost),money(lang,row.stockSellingValue)]);
+  if(kind==="payments") return (await payments(filters)).map((row)=>[
+    row.number,label(lang,row.kind),day(lang,row.at),row.party?.name ?? row.employee?.name ?? "",money(lang,row.amount),label(lang,row.method),
+    row.movements.filter(item=>!item.reversal).map(item=>accountName(item.account)).join(" · "),
+  ]);
+  if(!Object.hasOwn(reportDocumentKinds,kind)) return [];
+  return (await documents(reportDocumentKinds[kind],filters)).map((row)=>[
     row.number,label(lang,row.kind),day(lang,row.at),row.party?.name ?? row.employee?.name ?? "",money(lang,row.total),money(lang,row.due ?? 0n)]);
 }
 
