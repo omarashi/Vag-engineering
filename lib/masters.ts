@@ -5,6 +5,7 @@ import { cents, choice, date, integer, moneyAccountKinds, needed, normalize, rec
 import { prefixes, type Actor, type Change } from "./transaction";
 import { workshopPhotosEnabled } from "./workshop-photos";
 import { can } from "./permissions";
+import { internalLoginEmail, normalizeUsername, validUsername } from "./usernames";
 
 export type Input = Record<string, unknown>;
 export function checkVersion(before: {version: number} | null, input: Input) {
@@ -140,27 +141,33 @@ export async function settings(tx: Tx,input: Input): Promise<Change> {
 }
 export async function user(tx: Tx,input: Input): Promise<Change> {
   const id = text(input.id,120);
-  const select = {id:true,name:true,email:true,role:true,active:true,updatedAt:true} as const;
+  const select = {id:true,name:true,username:true,role:true,active:true,updatedAt:true} as const;
   const before = id ? await tx.user.findUnique({where:{id},select}) : null;
   requireRule(!id || before && before.updatedAt.toISOString() === input.updatedAt, "stale",409);
-  const email = needed(input.email,230).toLowerCase();
+  const username = typeof input.username === "string" ? normalizeUsername(input.username) : "";
   const role = choice(input.role,["owner","accountant","technician"] as const);
   const active = input.active !== false;
   const password = text(input.password,128);
-  requireRule(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
+  requireRule(validUsername(username), "invalidUsername");
+  if (before?.username !== username) {
+    requireRule(!await tx.user.findUnique({where:{username},select:{id:true}}), "duplicateUsername", 409);
+  }
   requireRule((before && !password) || password.length >= 12,"passwordLength");
   if (before?.role === "owner" && before.active && (role !== "owner" || !active)) {
     requireRule(await tx.user.count({where:{role:"owner",active:true,id:{not:before.id}}}),"lastOwner");
   }
-  const data = {name:needed(input.name),email,role,active};
-  const after = before ? await tx.user.update({where:{id:before.id},data,select}) : await tx.user.create({data:{id:randomUUID(),...data},select});
+  const data = {name:needed(input.name),username,role,active};
+  const userId = before?.id ?? randomUUID();
+  const after = before
+    ? await tx.user.update({where:{id:userId},data,select})
+    : await tx.user.create({data:{id:userId,email:internalLoginEmail(userId),...data},select});
   if (password) {
     const passwordHash = await hashPassword(password);
     const account = await tx.account.findFirst({where:{userId:after.id,providerId:"credential"}});
     if (account) await tx.account.update({where:{id:account.id},data:{password:passwordHash}});
     else await tx.account.create({data:{id:randomUUID(),userId:after.id,accountId:after.id,providerId:"credential",password:passwordHash}});
   }
-  if (before && (!active || password || before.role !== after.role || before.email !== after.email)) await tx.session.deleteMany({where:{userId:after.id}});
+  if (before && (!active || password || before.role !== after.role || before.username !== after.username)) await tx.session.deleteMany({where:{userId:after.id}});
   return {id:after.id,before,after:{...after,passwordReset:Boolean(before && password)}};
 }
 

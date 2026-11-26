@@ -82,7 +82,7 @@ tar -xzf ~/workshop-app.tar.gz
 
 The server runs **PostgreSQL 17**. The Docker volume `pgdata` holds the complete live database, including customers, vehicles, jobs, stock, debts, payments, payroll, user accounts, password hashes and audit history. Receipts are printable from their stored records. Uploaded files, if you ever use them, live in a second volume named `attachments`. Restarting or updating the app normally preserves both. Deleting the volumes or a server disk can erase the records. Copying the source in step 5 starts with an empty database. [Project configuration](../compose.yaml) · [Recovery guide](operations.md)
 
-On **Ubuntu**, stay in `/srv/vag-erp`. Substitute the real HTTPS address and an owner email you control before running this block. It creates fresh credentials and refuses to overwrite an existing `.env`. Store a private recovery copy of this file. Keep it out of source control.
+On **Ubuntu**, stay in `/srv/vag-erp`. Substitute the real HTTPS address and the owner's chosen username before running this block. It creates fresh credentials and refuses to overwrite an existing `.env`. Store a private recovery copy of this file. Keep it out of source control.
 
 ```bash
 (
@@ -92,9 +92,8 @@ On **Ubuntu**, stay in `/srv/vag-erp`. Substitute the real HTTPS address and an 
 BETTER_AUTH_URL=https://shop.example.com
 BETTER_AUTH_SECRET=$(openssl rand -hex 32)
 POSTGRES_PASSWORD=$(openssl rand -hex 32)
-BOOTSTRAP_EMAIL=owner@example.com
+BOOTSTRAP_USERNAME=owner
 BOOTSTRAP_NAME="Workshop Owner"
-VAG_DEMO=false
 BACKUP_KEEP=4
 EOF
 )
@@ -118,7 +117,7 @@ sudo docker compose ps -a
 curl -fsS http://127.0.0.1:3000/api/health
 ```
 
-Create the owner once. Use a unique password of at least 12 characters. These commands prompt privately and pass the password to a temporary container. Then sign in with the email from `.env`.
+Create the owner once. Use a unique password of at least 12 characters. These commands prompt privately and pass the password to a temporary container. Then sign in with the username from `.env`.
 
 ```bash
 read -r -s -p 'Choose the workshop owner password: ' BOOTSTRAP_PASSWORD

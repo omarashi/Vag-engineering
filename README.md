@@ -14,7 +14,7 @@ The interface supports English and Egyptian Arabic. Select **مصري** in the h
 
 ## Run the app
 
-Use Node 22.12 or later and a UTF-8 PostgreSQL database. Copy `.env.example` to `.env` and configure the database URL, login origin and secret. For the first owner, set the bootstrap email and password. Set `VAG_DEMO=true` only against an isolated demonstration database.
+Use Node 22.12 or later and a UTF-8 PostgreSQL database. Copy `.env.example` to `.env` and configure the database URL, login origin and secret. For the first owner, set `BOOTSTRAP_USERNAME` and `BOOTSTRAP_PASSWORD`.
 
 ```sh
 npm ci --ignore-scripts
@@ -24,7 +24,9 @@ npm run bootstrap
 npm run dev
 ```
 
-Open [the local workshop log](http://localhost:3000). **Open demo workspace** is available in demo mode.
+Open [the local workshop log](http://localhost:3000) and sign in as the first owner. Create additional staff accounts in **Settings → Users**.
+
+For existing installations, run the username migration when upgrading. The migration assigns usernames from the part of each old sign-in email before the @ and adjusts invalid or duplicate names. You can review or edit the assigned usernames in **Settings → Users**. Each account keeps its current password.
 
 Docker is available via `docker compose up --build -d` and `docker compose run --rm migrate npm run bootstrap`. See [deployment and recovery](docs/operations.md) for operation of the database and backups.
 
@@ -38,5 +40,5 @@ Run `npm run check`, `npm test` and `npm run build`. Set `TEST_DATABASE_ADMIN_UR
 
 The browser suites use Microsoft Edge on Windows when it is available. Set `VAG_EDGE_PATH` for another Edge installation, or install Chromium with `npx playwright install --with-deps chromium` on Linux. The CI workflow runs all suites with Chromium.
 
-To run individual suites against a demo you already started, set `TEST_URL` and point `DATABASE_URL` to its isolated database ending in `_test`. The suites write test records. Check cashbook, payroll and inventory with `npm run test:accountant`, workshop flows with `npm run test:acceptance`, roles with `npm run test:roles`, or photos with `npm run test:photos`. See [verification](docs/verification.md) for the release checks.
+To run individual suites against an isolated test instance, set `TEST_URL` and point `DATABASE_URL` to its database ending in `_test`. The suites write test records. Check cashbook, payroll and inventory with `npm run test:accountant`, workshop flows with `npm run test:acceptance`, roles with `npm run test:roles`, or photos with `npm run test:photos`. See [verification](docs/verification.md) for the release checks.
 

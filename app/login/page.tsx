@@ -5,6 +5,6 @@ import { Login } from "@/components/login";
 export default async function Page(){
   const [request,prefs]=await Promise.all([headers(),cookies()]);
   if(await currentUser(request))redirect("/overview");
-  return <Login lang={prefs.get("vag-lang")?.value==="ar"?"ar":"en"} theme={prefs.get("vag-theme")?.value==="light"?"light":"dark"} demo={process.env.VAG_DEMO==="true"}/>;
+  return <Login lang={prefs.get("vag-lang")?.value==="ar"?"ar":"en"}/>;
 }
 

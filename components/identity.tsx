@@ -46,8 +46,8 @@ export function Preferences({ lang, theme }: { lang: Language; theme: string }) 
   </>;
 }
 
-export function Shell({ lang, theme, user, demo, children }: {
-  lang: Language; theme: string; user: { name: string; role: Role }; demo: boolean; children: React.ReactNode;
+export function Shell({ lang, theme, user, children }: {
+  lang: Language; theme: string; user: { name: string; role: Role }; children: React.ReactNode;
 }) {
   const pathname = usePathname();
   const route = pathname.split("/")[1];
@@ -74,7 +74,6 @@ export function Shell({ lang, theme, user, demo, children }: {
     <aside className="log-sidebar">
       <Link href="/overview" className="log-brand"><Mark lang={lang}/></Link>
       <nav className="log-nav" aria-label={t("Main navigation")}>{links()}</nav>
-      {demo && <div className="log-demo"><span/>{t("Demonstration data")}</div>}
     </aside>
     <div className="log-main">
       <header className="log-topbar">
@@ -100,8 +99,8 @@ export function Shell({ lang, theme, user, demo, children }: {
           </div>
         </div>
       </header>
-      <main id="main-content" className="log-content">
-        <div className="log-route-content" key={pathname}>{children}</div>
+      <main id="main-content" className="log-content" key={pathname}>
+        <div className="log-route-content">{children}</div>
       </main>
     </div>
     <nav className="log-dock" aria-label={t("Main navigation")}>{links()}</nav>

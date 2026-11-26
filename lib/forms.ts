@@ -8,7 +8,7 @@ import type { Actor } from "./transaction";
 import { can } from "./permissions";
 import { carName } from "./car-name";
 import { jobStates } from "./workshop";
-import { accountName, accountTypeName, paymentMethodOptions, receiptDestinations } from "./payment-options";
+import { accountName, accountTypeName, isCustomPaymentMethod, paymentChannelField } from "./payment-options";
 import { payrollLocked } from "./payroll-rules";
 
 export type Choices=Awaited<ReturnType<typeof selections>>;
@@ -29,9 +29,10 @@ export function forms(lang:Language,data:Choices,actor:Actor){
   const customer=idOptions(data.customers),supplier=idOptions(data.suppliers),staff=idOptions(data.staff);
   const accounts=data.accounts.map((row)=>({value:row.id,name:accountName(row)}));
   const catalogue=(group:string)=>data.catalogue.filter((item)=>item.group===group).map((item)=>({value:item.name,name:item.name,price:moneyInput(item.price)}));
-  const paymentMethods=[...paymentMethodOptions(lang),...enumeration(["bank"]),...catalogue("paymentMethod")]
-    .filter((item,index,all)=>all.findIndex((prior)=>prior.value===item.value)===index);
-  const receipt=receiptDestinations(lang,data.accounts);
+  const customMethods=[...new Set(catalogue("paymentMethod").map(({value})=>value).filter(isCustomPaymentMethod))];
+  const payVia=paymentChannelField(lang,data.accounts,"Pay via",customMethods);
+  const receiveVia=paymentChannelField(lang,data.accounts,"Receive payment via",customMethods);
+  const receiptVia=paymentChannelField(lang,data.accounts,"Receive payment via");
   const cars=data.cars.map((item)=>({value:item.id,related:item.partyId,name:[carName(item),item.plate].filter(Boolean).join(" · ")}));
   const stockOptions=(localizeDemoNames=false)=>data.stock.map((item)=>{
     const name=localizeDemoNames && item.code.startsWith("DEMO-") ? demoPartNamesArabic[item.name] ?? item.name : item.name;
@@ -101,7 +102,7 @@ export function forms(lang:Language,data:Choices,actor:Actor){
     ]),hidden:{version:row.version ?? 0}}),
     user:(row:Row={},protectOwner=false)=>{
       const spec=edit("user",row.id?"Edit login":"Add user",[
-        txt("name","Display name",true,str(row,"name")),{...txt("email","Email",true,str(row,"email"),true),type:"email"},
+        txt("name","Display name",true,str(row,"name")),txt("username","Username",true,str(row,"username"),true),
         ...(!protectOwner?[choose("role","Role",enumeration(["owner","accountant","technician"]),true,str(row,"role")||"technician")]:[]),
         {...txt("password",row.id?"New password (optional)":"New password",!row.id),type:"password"},
         ...(!protectOwner?[check("active","Active account",row.active!==false)]:[]),
@@ -154,15 +155,14 @@ export function forms(lang:Language,data:Choices,actor:Actor){
       };
     },
     purchase:(kind:"purchase"|"purchaseOrder",row?:Row)=>({...post(kind,row?"Receive order":kind==="purchase"?"New purchase":"New purchase order",[
-      ...(!row?[choose("partyId","Supplier",supplier,true)]:[]),...(kind==="purchase"?[txt("reference","Reference",true)]:[]),...dateFields(),memo("note","Notes"),
+      ...(!row?[choose("partyId","Supplier",supplier,true)]:[]),...(kind==="purchase"?[txt("reference","Supplier invoice number (optional)")]:[]),...dateFields(),memo("note","Notes"),
     ],row?{sourceId:row.id}:{},"/record/$id"),editor:row?undefined:"lines" as const,
       parts:kind==="purchase" && !row && lang==="ar" ? stockOptions(true) : parts,onlyParts:true,purchase:true}),
     expense:()=>post("expense","New expense",[txt("title","Title",true),expenseCategory(),
       txt("payee","Payee"),m("amount","Amount",{},true),when(),memo("note","Notes")],{},"/record/$id"),
     paidExpense:(day:string)=>post("paidExpense","Record paid expense",[
       m("amount","Amount",{},true),expenseCategory(),
-      choose("accountId","Paid from",accounts,true,accounts.length===1?accounts[0].value:""),
-      choose("method","Payment method",paymentMethods,true,"cash"),
+      payVia,
       when("at","Date",day,true),txt("payee","Payee"),memo("note","Notes"),
     ],{},"/record/$id"),
     credit:(row:Row)=>({...post("credit","Add credit / return",[when(),m("amount","Amount"),memo("reason","Reason","",true)],{sourceId:row.id},"/record/$id"),
@@ -175,11 +175,11 @@ export function forms(lang:Language,data:Choices,actor:Actor){
         credit:"refund",supplierCredit:"supplierRefund",expense:"expensePayment",payroll:"salaryPayment",employeeOpening:"salaryPayment"};
       const build=(kind:string):Field[]=>{
         const picker=kind==="receipt"||kind==="refund"?customer:kind==="supplierPayment"||kind==="supplierRefund"?supplier:null;
-        const filtered=[...(picker?[choose("partyId",picker===customer?"Customer":"Supplier",picker,true,str(row ?? job ?? {},"partyId"))]:[]),
+        return [...(picker?[choose("partyId",picker===customer?"Customer":"Supplier",picker,true,str(row ?? job ?? {},"partyId"))]:[]),
           ...(["advance","salaryPayment"].includes(kind)?[choose("employeeId","Employee",staff,true,str(row ?? {},"employeeId"))]:[]),
           ...(["receipt","supplierPayment"].includes(kind)?[check("allowCredit","Allow unallocated credit",Boolean(job))]:[]),
-          ...(kind==="receipt"&&!job?[choose("jobId","Workshop jobs",jobs,false,"","partyId")]:[])];
-        return filtered;
+          ...(kind==="receipt"&&!job?[choose("jobId","Workshop jobs",jobs,false,"","partyId")]:[]),
+          kind==="receipt" ? receiptVia : kind==="supplierRefund" ? receiveVia : kind==="cashOpening" ? {...payVia,label:"Account"} : payVia];
       };
       const paymentKinds=["supplierPayment","refund","supplierRefund","expensePayment","salaryPayment","advance"];
       const kind=opening?"cashOpening":job||receiptOnly?"receipt":row?map[str(row,"kind")]:paymentKinds[0];
@@ -188,8 +188,6 @@ export function forms(lang:Language,data:Choices,actor:Actor){
         ["refund","supplierRefund"].includes(kind)?"Record refund":"Record payment";
       const spec={...post("payment",title,[
         ...(!row&&!job&&!opening&&!receiptOnly?[choose("kind","Type",enumeration(paymentKinds),true,kind)]:build(kind)),
-        ...(kind==="receipt" ? [{...choose("receiptDestination","Receive payment via",receipt.options,true,receipt.initial),wide:true}]
-          : [choose("accountId","Account",accounts,true),choose("method","Payment method",paymentMethods,true,"cash")]),
         m("amount",kind==="receipt"?"Amount paid (EGP)":"Amount",{amount:row?.due},true),
         when(),memo("note","Notes","",opening||["refund","supplierRefund"].includes(kind)),
       ],{...(row||job||opening||receiptOnly?{kind}:{}),...(job?{jobId:job.id}:{})},"/payment/$id"),
@@ -206,9 +204,8 @@ export function forms(lang:Language,data:Choices,actor:Actor){
     cashMovement:(kind:"transfer"|"contribution"|"withdrawal")=>{
       const title={transfer:"Transfer between accounts",contribution:"Record owner contribution",withdrawal:"Record owner withdrawal"}[kind];
       return post("payment",title,[
-        choose("accountId",kind==="transfer"?"Source account":"Account",accounts,true),
-        kind==="transfer"?choose("toAccountId","Destination account",accounts,true):
-          choose("method","Payment method",paymentMethods,true,"cash"),
+        ...(kind==="transfer" ? [choose("accountId","Source account",accounts,true),choose("toAccountId","Destination account",accounts,true)]
+          : [kind==="contribution" ? receiveVia : payVia]),
         m("amount","Amount",{},true),when(),memo("note","Reason","",true),
       ],{kind},"/payment/$id");
     },
@@ -224,7 +221,7 @@ export function forms(lang:Language,data:Choices,actor:Actor){
     ],{id:row.id}),
     payFinalize:(row:Row)=>post("payFinalize","Finalize period",[],{id:row.id,version:row.version}),
     payReopen:(row:Row)=>post("payReopen","Reopen payroll period",[memo("reason","Reason","",true)],{id:row.id,version:row.version}),
-    adapters:{customer,supplier,staff,parts,cars,accounts,paymentMethods,enumeration,businessKinds,day},
+    adapters:{customer,supplier,staff,parts,cars,accounts,payVia,enumeration,businessKinds,day},
   };
   return ret;
 }

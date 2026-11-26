@@ -28,7 +28,10 @@ export function Attachments({lang,id,type,allow,files,pdfOnly=false}:{lang:Langu
       }catch{setError("network");}finally{upload.current.busy=false;setWorking(false);}
     }}><header className="dialog-head"><h2>{tr("Add attachment")}</h2><Button type="button" variant="ghost" disabled={working} onClick={()=>dialog.current?.close()} aria-label={tr("Close")}><X size={17}/></Button></header>
       <div className="dialog-body"><label className="field">{tr("Choose file")}<input name="file" type="file" accept={pdfOnly?".pdf":".pdf,.jpg,.jpeg,.png,.webp"} disabled={working} onChange={()=>{upload.current.key="";setError("");}} required/></label>
-      {error&&<p className="error" role="alert">{message(lang,error)}</p>}</div><footer className="dialog-foot"><Button variant="primary" disabled={working}>{tr(working?"Saving…":"Upload")}</Button></footer>
+      {error&&<p className="error" role="alert">{message(lang,error)}</p>}</div><footer className="dialog-foot">
+        <Button type="button" disabled={working} onClick={()=>dialog.current?.close()}>{tr("Cancel")}</Button>
+        <Button type="submit" variant="primary" disabled={working}>{tr(working?"Saving…":"Upload")}</Button>
+      </footer>
     </form></dialog>}
   </Panel>;
 }

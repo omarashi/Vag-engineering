@@ -107,7 +107,7 @@ export async function visitReceipt(tx: Tx, input: Input, actor: Actor): Promise<
   const invoice = existing ?? await billVisit(tx, actor, visit, input, at);
   const paid = await payment(tx, {
     kind: "receipt", invoiceId: invoice.id, amount: input.amount, accountId: input.accountId, method: input.method, at: input.at,
-    receiptDestination: input.receiptDestination,
+    paymentChannel: input.paymentChannel, receiptDestination: input.receiptDestination,
     note: input.note,
   }, actor);
   return { ...paid, after: { invoiceId: invoice.id, createdInvoice: !existing, payment: paid.after } };

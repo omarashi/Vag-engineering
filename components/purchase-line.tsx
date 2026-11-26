@@ -1,6 +1,6 @@
-import { useState } from "react";
 import { translate, type Language } from "@/lib/locale";
 import type { Option } from "./backoffice-form";
+import { PurchaseProductPicker } from "./purchase-product-picker";
 
 export type PurchaseQuoteOption = {
   value: string;
@@ -16,26 +16,23 @@ type Row = Record<string, string>;
 export function PurchaseLineFields({ lang, row, parts, quotes, onChange }: {
   lang: Language; row: Row; parts: Option[]; quotes: PurchaseQuoteOption[]; onChange: (row: Row) => void;
 }) {
-  const [query, setQuery] = useState("");
   const t = (key: string) => translate(lang, key);
   const source = row.productSource || "inventory";
   const quote = source === "quote" ? quotes.find((item) => item.value === row.quote) : undefined;
-  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const matches = source === "quote" ? quotes.filter((item) => {
-    const searchable = `${item.brand} ${item.description} ${item.value}`.toLowerCase();
-    return terms.every((term) => searchable.includes(term));
-  }) : [];
-  const visible = quote && !matches.includes(quote) ? [quote, ...matches] : matches;
 
   function chooseSource(productSource: string) {
-    setQuery("");
     onChange({ kind: "part", productSource, quantity: row.quantity, discount: "0", description: "", price: "" });
   }
 
-  function chooseQuote(item?: PurchaseQuoteOption) {
-    setQuery("");
-    onChange({ ...row, quote: item?.value ?? "", quoteVersion: String(item?.version ?? 0),
-      description: item?.description ?? "", price: item?.cost ?? "", sellingPrice: "" });
+  function chooseInventory(value: string) {
+    const item = parts.find((item) => item.value === value);
+    if (item) onChange({ ...row, partId: item.value, description: item.name, price: item.cost ?? "" });
+  }
+
+  function chooseQuote(value: string) {
+    const item = quotes.find((item) => item.value === value);
+    if (item) onChange({ ...row, quote: item.value, quoteVersion: String(item.version),
+      description: item.description, price: item.cost, sellingPrice: "" });
   }
 
   return <>
@@ -46,32 +43,11 @@ export function PurchaseLineFields({ lang, row, parts, quotes, onChange }: {
         {quotes.length > 0 && <option value="quote">{t("Add from price list")}</option>}
       </select>
     </label>
-    {source === "inventory" && <label className="field wide">{t("Part")}
-      <select required value={row.partId ?? ""} onChange={(event) => {
-        const item = parts.find(({ value }) => value === event.target.value);
-        onChange({ ...row, partId: item?.value ?? "", description: item?.name ?? "", price: item?.cost ?? "" });
-      }}>
-        <option value="">{t("Select…")}</option>
-        {parts.map((item) => <option key={item.value} value={item.value}>{item.name}</option>)}
-      </select>
-    </label>}
-    {source === "quote" && <>
-      <label className="field wide">{t("Search price list")}
-        <input type="search" dir="auto" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => {
-          if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
-          event.preventDefault();
-          if (matches.length === 1) chooseQuote(matches[0]);
-        }}/>
-      </label>
-      <label className="field wide">{t("Supplier price list")}
-        <select required value={row.quote ?? ""} onChange={(event) => chooseQuote(quotes.find((item) => item.value === event.target.value))}>
-          <option value="">{t(matches.length ? "Select…" : "No matching parts")}</option>
-          {visible.map((item) => <option key={item.value} value={item.value}>
-            {[item.brand, item.description].filter(Boolean).join(" · ")}
-          </option>)}
-        </select>
-      </label>
-    </>}
+    {source === "inventory" && <PurchaseProductPicker key="inventory" lang={lang} title="Search inventory"
+      options={parts} value={row.partId} onSelect={chooseInventory}/>}
+    {source === "quote" && <PurchaseProductPicker key="quote" lang={lang} title="Search price list"
+      options={quotes.map(({ value, brand, description }) => ({ value, name: [brand, description].filter(Boolean).join(" · "), search: value }))}
+      value={row.quote} onSelect={chooseQuote}/>}
     <label className="field">{t(source === "manual" ? "Product name" : "Description")}
       <input required dir="auto" maxLength={source === "manual" ? 180 : 500} readOnly={source === "quote"} value={row.description}
         onChange={(event) => onChange({ ...row, description: event.target.value })}/>

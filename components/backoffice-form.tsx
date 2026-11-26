@@ -8,6 +8,7 @@ import Link from "./navigation-link";
 import { label, message, translate, type Language } from "@/lib/locale";
 import { postFormAction, type PendingAction } from "@/lib/action-request";
 import { PurchaseLineFields, type PurchaseQuoteOption } from "./purchase-line";
+import { PurchaseProductPicker } from "./purchase-product-picker";
 import { useDialogDismiss } from "./use-dialog-dismiss";
 
 export type Option={value:string;name:string;related?:string;price?:string;cost?:string;version?:number};
@@ -33,7 +34,8 @@ export function ActionForm({lang,spec,primary=false,auto=false,source}:{lang:Lan
   const submitting=useRef(false);
   const uncertain=Boolean(request.current?.uncertain);
   const {finish,dismiss}=useDialogDismiss(dialog,step!=="closed",lang,dirty,working||uncertain);
-  const fields=[...(spec.fields ?? []),...(spec.dynamic?.[String(state.kind)] ?? [])];
+  const fields=(spec.fields ?? []).flatMap((field)=>field.key==="kind"
+    ? [field,...(spec.dynamic?.[String(state.kind)] ?? [])] : [field]);
   const initial=()=>Object.fromEntries([...(spec.fields ?? []),...(spec.dynamic?.[String(spec.fields?.find((field)=>field.key==="kind")?.value ?? "")] ?? [])]
     .map((field)=>[field.key,field.value ?? (field.type==="check"?false:field.type==="multi"?[]:"")]));
   function open(){
@@ -50,6 +52,8 @@ export function ActionForm({lang,spec,primary=false,auto=false,source}:{lang:Lan
   useEffect(()=>{if(auto&&!dialog.current?.open)open();/* Run once for the requested create action. */},[]); // eslint-disable-line react-hooks/exhaustive-deps
   function update(key:string,value:unknown){
     setDirty(true);
+    setConfirmed(false);
+    if(spec.editor==="allocations" && ["kind","partyId","employeeId"].includes(key)) setRows([]);
     setState((previous)=>{
       const next={...previous,[key]:value};
       for(const field of fields) if(field.depends===key) next[field.key]="";
@@ -62,6 +66,7 @@ export function ActionForm({lang,spec,primary=false,auto=false,source}:{lang:Lan
   }
   function editRows(next:SetStateAction<Row[]>){
     setDirty(true);
+    setConfirmed(false);
     setRows(next);
   }
   function changeRow(index:number,key:string,value:string){
@@ -119,6 +124,7 @@ export function ActionForm({lang,spec,primary=false,auto=false,source}:{lang:Lan
     if(field.type==="select")return <select {...shared} value={String(value ?? "")} onChange={(event)=>update(field.key,event.target.value)}><option value="">{tr("Select…")}</option>{options.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select>;
     if(field.type==="multi")return <select {...shared} multiple value={Array.isArray(value)?value:[]} onChange={(event)=>update(field.key,[...event.target.selectedOptions].map((option)=>option.value))}>{options.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select>;
     return <input {...shared} type={field.type ?? "text"} inputMode={field.inputMode ?? (field.key==="phone"?"tel":undefined)} value={String(value ?? "")}
+      autoCapitalize={field.key==="username"?"none":undefined} spellCheck={field.key==="username"?false:undefined}
       autoComplete={field.type==="password"?"new-password":field.key==="phone"?"tel":field.type==="email"?"email":undefined} onChange={(event)=>update(field.key,event.target.value)}/>;
   }
   const paymentTargets:Record<string,string[]>={receipt:["invoice","customerOpening"],supplierPayment:["purchase","supplierOpening"],refund:["credit"],supplierRefund:["supplierCredit"],expensePayment:["expense"],salaryPayment:["payroll","employeeOpening"],advance:["payroll","employeeOpening"]};
@@ -159,7 +165,10 @@ export function ActionForm({lang,spec,primary=false,auto=false,source}:{lang:Lan
               {spec.editor==="lines"&&(spec.purchaseQuotes ? <PurchaseLineFields lang={lang} row={row} parts={spec.parts ?? []} quotes={spec.purchaseQuotes}
                 onChange={(next)=>editRows((items)=>items.map((item,position)=>position===index?next:item))}/> : <>
                 {!spec.onlyParts&&<label className="field">{tr("Type")}<select value={row.kind} onChange={(event)=>changeRow(index,"kind",event.target.value)}>{["service","labor","part","supplied"].map((key)=><option key={key} value={key}>{label(lang,key)}</option>)}</select></label>}
-                {row.kind==="part"&&<label className="field">{tr("Part")}<select required value={row.partId} onChange={(event)=>changeRow(index,"partId",event.target.value)}><option value="">{tr("Select…")}</option>{spec.parts?.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select></label>}
+                {row.kind==="part"&&(spec.purchase ?
+                  <PurchaseProductPicker lang={lang} title="Search inventory" options={spec.parts ?? []} value={row.partId}
+                    onSelect={(value)=>changeRow(index,"partId",value)}/> :
+                  <label className="field">{tr("Part")}<select required value={row.partId} onChange={(event)=>changeRow(index,"partId",event.target.value)}><option value="">{tr("Select…")}</option>{spec.parts?.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select></label>)}
                 {row.kind==="service"&&!!spec.services?.length&&<label className="field">{tr("Service catalogue")}<select value={row.serviceId ?? ""} onChange={(event)=>changeRow(index,"serviceId",event.target.value)}><option value="">{tr("Select…")}</option>{spec.services.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select></label>}
                 <label className="field">{tr("Description")}<input required value={row.description} onChange={(event)=>changeRow(index,"description",event.target.value)}/></label>
                 {(["quantity","price","discount"] as const).map((field)=><label className="field" key={field}>{tr(field[0].toUpperCase()+field.slice(1))}<input dir="ltr" inputMode="decimal" required={field!=="discount"} value={row[field]} onChange={(event)=>changeRow(index,field,event.target.value)}/></label>)}

@@ -3,7 +3,7 @@ import { divideHalfUp, normalize, parseMoney } from "./decimal-input";
 
 export { normalize } from "./decimal-input";
 
-export const moneyAccountKinds = ["cash", "bank", "cardTerminal", "vodafoneCash", "instaPay"] as const;
+export const moneyAccountKinds = ["cash", "bank", "visa", "cardTerminal", "vodafoneCash", "instaPay"] as const;
 
 export class RuleError extends Error {
   constructor(public code: string, public status = 422) { super(code); }

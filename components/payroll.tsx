@@ -8,7 +8,7 @@ import { addDays, today } from "@/lib/rules";
 import { payrollLocked } from "@/lib/payroll-rules";
 import { documents, payments } from "@/lib/views";
 import { AbsenceToggle } from "./absence-toggle";
-import { ActionForm, type ActionSpec, type Option } from "./action-form";
+import { ActionForm, type ActionSpec, type Field } from "./action-form";
 import type { ModuleProps } from "./modules";
 import { Actions, Amt, CashAccountSetup, Heading, Info, PayRegister, Ref, Register } from "./register";
 import { Badge, Button, ButtonLink, Panel } from "./ui";
@@ -22,9 +22,9 @@ const actionTitles: Record<PayrollAction, string> = {
   deduction: "Deduct salary",
 };
 
-function payrollForm({ kind, employee, selected, accounts, methods, lang }: {
+function payrollForm({ kind, employee, selected, payVia, lang }: {
   kind: PayrollAction; employee: Employee; selected: PayWeek;
-  accounts: Option[]; methods: Option[]; lang: Language;
+  payVia: Field; lang: Language;
 }): ActionSpec {
   const date = today();
   const deduction = kind === "deduction";
@@ -48,11 +48,7 @@ function payrollForm({ kind, employee, selected, accounts, methods, lang }: {
       ...(kind !== "salaryPayment" ? [{
         key: "amount", label: "Amount (EGP)", required: true, wide: true, ltr: true, inputMode: "decimal" as const,
       }] : []),
-      ...(!deduction ? [
-        { key: "accountId", label: "Paid from", type: "select" as const, value: accounts.length === 1 ? accounts[0].value : "", options: accounts, required: true },
-        { key: "method", label: "Payment method", type: "select" as const, value: "cash", required: true,
-          options: methods },
-      ] : []),
+      ...(!deduction ? [payVia] : []),
       { key: "at", label: "Date", type: "date", value: date, min: today(employee.startedAt), max: date, required: true, ltr: true },
       { key: "note", label: deduction ? "Reason" : "Notes", type: "textarea", wide: true, required: deduction },
     ],
@@ -225,8 +221,7 @@ export async function EmployeeView({ lang, forms, id, query }: ModuleProps & { i
   const mayAdjust = mayPay;
   const accounts = forms.adapters.accounts;
   const payrollAction = (kind: PayrollAction) => <ActionForm key={week+kind} lang={lang} primary={kind==="salaryPayment"}
-    spec={payrollForm({ kind, employee, selected,
-      accounts, methods:forms.adapters.paymentMethods, lang })}/>;
+    spec={payrollForm({ kind, employee, selected, payVia:forms.adapters.payVia, lang })}/>;
   const profile = { ...forms.employee(plain(employee)), destination: path+"?week="+week };
   const dismiss: ActionSpec = {
     action: "employeeDismiss", title: "Dismiss employee", submitLabel: "Confirm dismissal", destination: path,

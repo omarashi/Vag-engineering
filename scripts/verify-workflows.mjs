@@ -68,7 +68,8 @@ try{
     const port=await freePort();
     const base="http://127.0.0.1:"+port;
     const env={...process.env,DATABASE_URL:url.href,ATTACHMENT_DIR:attachments,TEST_URL:base,HOSTNAME:"127.0.0.1",PORT:String(port),
-      BETTER_AUTH_URL:base,BETTER_AUTH_SECRET:randomBytes(32).toString("hex"),VAG_DEMO:"true",VAG_DEMO_PASSWORD:"Demo-Workshop-2026!"};
+      BETTER_AUTH_URL:base,BETTER_AUTH_SECRET:randomBytes(32).toString("hex"),
+      BOOTSTRAP_USERNAME:"owner",BOOTSTRAP_NAME:"Omar Khaled",BOOTSTRAP_PASSWORD:"Demo-Workshop-2026!"};
     let child;
     let created=false;
     try{
@@ -78,6 +79,7 @@ try{
       created=true;
       await execute(["node_modules/prisma/build/index.js","migrate","deploy"],env);
       await execute(["node_modules/tsx/dist/cli.mjs","scripts/bootstrap.ts"],env);
+      await execute(["node_modules/tsx/dist/cli.mjs","tests/seed.ts"],env);
       child=start([".next/standalone/server.js"],env);
       await ready(child,base);
       await execute(suites[name],env);

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
-export async function signIn(base, email, password = "Demo-Workshop-2026!", permitted = true) {
-  const response = await fetch(base + "/api/auth/sign-in/email", {
-    method: "POST", headers: { Origin: base, "Content-Type": "application/json" }, body: JSON.stringify({ email, password }),
+export async function signIn(base, username, password = "Demo-Workshop-2026!", permitted = true) {
+  const response = await fetch(base + "/api/auth/sign-in/username", {
+    method: "POST", headers: { Origin: base, "Content-Type": "application/json" }, body: JSON.stringify({ username, password }),
   });
   assert.equal(response.ok, permitted, await response.clone().text());
   return response.headers.getSetCookie().map((row) => row.split(";")[0]).join("; ");

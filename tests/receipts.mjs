@@ -7,7 +7,7 @@ import { postAction, signIn } from "./support/http.mjs";
 const base = process.env.TEST_URL;
 if (!base || !new URL(process.env.DATABASE_URL).pathname.endsWith("_test")) throw Error("Use the isolated test instance and database.");
 const db = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }) });
-const login = (role) => signIn(base, role + "@vag-demo.test");
+const login = (role) => signIn(base, role);
 const action = (cookie, name, data, key) => postAction(base, cookie, name, data, key);
 async function post(cookie, name, data, key) {
   const result = await action(cookie, name, data, key);
@@ -115,7 +115,7 @@ try {
   assert.match(invoiceHtml, /Amount due.*0\.00/);
   assert.match(html, /الإجمالي<\/dt><dd><bdi>[^<]*٥٠٠٫٠٠/);
   assert.match(html, /المدفوع<\/dt><dd><bdi>[^<]*٢٠٠٫٠٠/);
-  assert.doesNotMatch(html,/Workshop cash/);
+  assert.ok(!html.includes(account.name), "The printed receipt should omit the payment account name.");
   const secondCar = await post(owner, "vehicle", { partyId, make: "Audi", model: "A3" });
   async function chargeVisit(at, vehicleId, price, detail) {
     const sourceId = await post(technician, "visit", {
@@ -207,8 +207,11 @@ try {
     assert.equal((await result.json()).error, code);
   };
   await invoiceError(invoiceInput, "issueBeforeInvoice");
-  await post(owner, "jobStock", { jobId, partId, kind: "reserve", quantity: "2" });
-  await invoiceError(invoiceInput, "reconcileJob");
+  await db.$transaction([
+    db.part.update({where:{id:partId},data:{reserved:{increment:"2"}}}),
+    db.jobStock.create({data:{documentId:jobId,partId,reserved:"2"}}),
+  ]);
+  await invoiceError(invoiceInput, "issueBeforeInvoice");
   await post(owner, "jobStock", { jobId, partId, kind: "issue", quantity: "2" });
   assert.equal(await onHand(), "4");
   await invoiceError({ ...invoiceInput, lines: [{ ...invoiceInput.lines[0], quantity: "1" }] }, "reconcileJob");
@@ -314,7 +317,7 @@ try {
   assert.equal((await db.allocation.findFirstOrThrow({ where: { documentId: heldInvoice.id, paymentId: heldReceipt } })).amount, 30000n);
   const discountedReceipt=await readReceipt(heldReceipt);
   assert.match(discountedReceipt,/Discount<\/dt><dd><bdi>EGP\s*60\.01/);
-  assert.doesNotMatch(discountedReceipt,/Workshop cash/);
+  assert.ok(!discountedReceipt.includes(account.name), "The discounted receipt should omit the payment account name.");
 
   const employeeId = await post(owner, "employee", {
     name: "Weekly payroll QA " + randomUUID().slice(0, 8), startedAt: "2025-11-15", weeklySalary: "3000", paidDaysPerWeek: 6,

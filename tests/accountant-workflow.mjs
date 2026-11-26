@@ -23,32 +23,53 @@ async function page(session, path, status = 200) {
   return response.text();
 }
 
+// Existing ledgers can still contain advances booked before the advance limit.
+async function legacyAdvance(session, data, applied, excess) {
+  const {id}=await post(session,"weeklyPayroll",{...data,amount:applied});
+  const {documentId}=await db.allocation.findFirstOrThrow({where:{paymentId:id}});
+  await db.$transaction([
+    db.payment.update({where:{id},data:{amount:{increment:excess}}}),
+    db.cashMovement.updateMany({where:{paymentId:id},data:{amount:{decrement:excess}}}),
+    db.payrollExcess.create({data:{documentId,paymentId:id,remaining:excess,at:new Date(data.at+"T12:00:00Z")}}),
+  ]);
+  return id;
+}
+
 try {
   const [owner, accountant, technician] = await Promise.all(
-    ["owner","accountant","technician"].map(role=>signIn(base,role+"@vag-demo.test")),
+    ["owner","accountant","technician"].map(username=>signIn(base,username)),
   );
   const {id:accountId} = await post(owner,"account",{name:"Cashbook "+suffix,kind:"cash",code:"C-"+suffix});
   const {id:visaId} = await post(owner,"account",{name:"Visa QA "+suffix,kind:"bank"});
+  const {id:instaPayId} = await post(owner,"account",{name:"InstaPay QA "+suffix,kind:"instaPay"});
   const terminal = await db.moneyAccount.findUniqueOrThrow({where:{code:"M1"}});
   assert.equal(terminal.kind,"cardTerminal");
   assert.ok(await db.moneyAccount.findUnique({where:{code:"M2"}}));
-  await post(accountant,"payment",{kind:"cashOpening",at:monday,accountId,amount:"1000",note:"Cashbook QA opening"});
-  const paid = {at:tuesday,accountId,method:"vodafoneCash",amount:"50",category:"Supplies",payee:"Expense QA "+suffix};
+  const gamalVisa = await db.moneyAccount.findUniqueOrThrow({where:{code:"G"}});
+  assert.equal(gamalVisa.kind,"visa");
+  await post(accountant,"payment",{kind:"cashOpening",at:monday,paymentChannel:"cash:"+accountId,amount:"1000",note:"Cashbook QA opening"});
+  const paid = {at:tuesday,paymentChannel:"cash:"+accountId,amount:"50",category:"Supplies",payee:"Expense QA "+suffix};
   await post(technician,"paidExpense",paid,undefined,403);
+  assert.equal((await post(accountant,"paidExpense",{...paid,paymentChannel:"card:"+accountId},undefined,422)).error,"invalidPaymentChannel");
+  assert.equal(await db.document.count({where:{kind:"expense",reference:paid.payee}}),0);
   const expenseKey = randomUUID();
   const {id:expenseId} = await post(accountant,"paidExpense",paid,expenseKey);
   assert.equal((await post(accountant,"paidExpense",paid,expenseKey)).id,expenseId);
   const expense = await db.document.findUniqueOrThrow({where:{id:expenseId},include:{allocations:{include:{payment:true}}}});
   assert.equal(expense.allocations.length,1);
-  assert.equal(expense.allocations[0].payment.method,"vodafoneCash");
+  assert.equal(expense.allocations[0].payment.method,"cash");
   const {id:expensePayment} = expense.allocations[0].payment;
+  assert.equal(await db.cashMovement.count({where:{paymentId:expensePayment,accountId,amount:-5000n}}),1);
   const {id:partyId} = await post(owner,"customer",{name:"Card QA "+suffix});
   const cardReceipt={kind:"receipt",partyId,at:tuesday,amount:"200",allowCredit:true};
   assert.equal((await post(accountant,"payment",{...cardReceipt,receiptDestination:"cash:"+terminal.id},undefined,422)).error,"invalidAccount");
-  const {id:cardReceiptId}=await post(accountant,"payment",{...cardReceipt,receiptDestination:"card:"+terminal.id});
+  const {id:cardReceiptId}=await post(accountant,"payment",{...cardReceipt,paymentChannel:"card:"+terminal.id});
   const recordedCard=await db.payment.findUniqueOrThrow({where:{id:cardReceiptId},include:{movements:true}});
   assert.equal(recordedCard.method,"card");
   assert.equal(recordedCard.movements[0].accountId,terminal.id);
+  assert.equal((await post(accountant,"payment",{...cardReceipt,paymentChannel:"transfer:"+gamalVisa.id},undefined,422)).error,"invalidPaymentChannel");
+  const {id:gamalReceipt}=await post(accountant,"payment",{...cardReceipt,paymentChannel:"card:"+gamalVisa.id});
+  assert.equal(await db.cashMovement.count({where:{paymentId:gamalReceipt,accountId:gamalVisa.id,amount:20000n}}),1);
   const {id:transfer} = await post(accountant,"payment",{
     kind:"transfer",accountId:terminal.id,toAccountId:visaId,at:tuesday,amount:"200",note:"M1 settlement "+suffix,
   });
@@ -71,6 +92,14 @@ try {
   assert.match(await page(accountant,"/reports?report=expenses"+expenseFilters),new RegExp(expense.number));
   assert.match(await page(accountant,"/api/export?report=expenses"+expenseFilters),new RegExp(expense.number));
   assert.doesNotMatch(await page(accountant,"/api/export?report=expenses&from="+wednesday+"&to="+wednesday),new RegExp(expense.number));
+  const customMethod = "Deposit: branch " + suffix;
+  const {id:catalogId} = await post(owner,"catalogue",{group:"paymentMethod",name:customMethod});
+  const contribution={kind:"contribution",at:wednesday,paymentChannel:customMethod+":"+visaId,amount:"40",note:"Contribution QA"};
+  const {id:contributionId}=await post(accountant,"payment",contribution);
+  assert.equal((await db.payment.findUniqueOrThrow({where:{id:contributionId}})).method,customMethod);
+  assert.equal(await db.cashMovement.count({where:{paymentId:contributionId,accountId:visaId,amount:4000n}}),1);
+  await post(owner,"catalogue",{id:catalogId,version:0,group:"paymentMethod",name:customMethod,archived:true});
+  assert.equal((await post(accountant,"payment",contribution,undefined,422)).error,"invalidPaymentChannel");
   await post(accountant,"expense",{title:null,category:"Test",amount:"10"},undefined,422);
   await post(accountant,"expense",{title:"x".repeat(181),category:"Test",amount:"10"},undefined,422);
   await page(technician,"/cash",404);
@@ -83,12 +112,18 @@ try {
   const absences = await db.employeeAbsence.findMany({where:{employeeId},orderBy:{day:"asc"},include:{deductionEntry:true}});
   assert.deepEqual(absences.map(row=>[row.halfDay,row.deductionEntry.amount]),[[true,-25000n],[false,-50000n]]);
   await post(accountant,"employeeAbsence",{employeeId,day:"2025-11-23",action:"mark"},undefined,422);
-  const advance = {employeeId,kind:"advance",weekEnding:friday,at:tuesday,accountId,method:"instaPay",amount:"2700"};
-  const {id:advanceId,warning} = await post(accountant,"weeklyPayroll",advance);
-  assert.equal(warning,"payrollExcessReview");
+  const advance = {employeeId,kind:"advance",weekEnding:friday,at:tuesday,paymentChannel:"instaPay:"+instaPayId,amount:"2700"};
+  assert.equal((await post(accountant,"weeklyPayroll",advance,undefined,422)).error,"advanceLimit");
+  const advanceId = await legacyAdvance(accountant,advance,"2250",45000n);
   const excess = await db.payrollExcess.findUniqueOrThrow({where:{paymentId:advanceId}});
   assert.equal(excess.remaining,45000n);
-  assert.equal(await db.cashMovement.count({where:{paymentId:advanceId,amount:-270000n}}),1);
+  assert.equal((await db.payment.findUniqueOrThrow({where:{id:advanceId}})).method,"instaPay");
+  assert.equal(await db.cashMovement.count({where:{paymentId:advanceId,accountId:instaPayId,amount:-270000n}}),1);
+  const {id:salaryEmployee}=await post(owner,"employee",{name:"Salary channel "+suffix,startedAt:monday,weeklySalary:"600"});
+  const {id:salaryId}=await post(accountant,"weeklyPayroll",{employeeId:salaryEmployee,kind:"salaryPayment",
+    weekEnding:friday,at:friday,paymentChannel:"transfer:"+visaId});
+  assert.equal((await db.payment.findUniqueOrThrow({where:{id:salaryId}})).method,"transfer");
+  assert.equal(await db.cashMovement.count({where:{paymentId:salaryId,accountId:visaId,amount:-60000n}}),1);
   const sheet = await page(accountant,"/payroll?week="+monday);
   assert.match(sheet,/Weekly payroll sheet/);
   assert.match(sheet,/Half-day deduction/);
@@ -120,7 +155,7 @@ try {
 
   const {id:applyEmployee}=await post(owner,"employee",{name:"Apply QA "+suffix,startedAt:"2025-11-01",weeklySalary:"3000"});
   const applyAdvance = {employeeId:applyEmployee,kind:"advance",weekEnding:friday,at:tuesday,accountId,method:"instaPay",amount:"3100"};
-  const {id:applyAdvanceId}=await post(accountant,"weeklyPayroll",applyAdvance);
+  const applyAdvanceId=await legacyAdvance(accountant,applyAdvance,"3000",10000n);
   const applyReview=await db.payrollExcess.findUniqueOrThrow({where:{paymentId:applyAdvanceId}});
   const applyAllocation=await db.allocation.findFirstOrThrow({where:{paymentId:applyAdvanceId,documentId:applyReview.documentId}});
   await post(accountant,"unallocate",{id:applyAllocation.id,reason:"Make room in the same week"});
@@ -146,7 +181,10 @@ try {
   await post(owner,"stock",{partId:otherPart,kind:"adjustment",quantity:"1",reason:"Warehouse total fixture"});
   const {id:vehicleId} = await post(owner,"vehicle",{partyId,make:"VW",model:"Golf"});
   const {id:reserveJobId} = await post(technician,"job",{partyId,vehicleId,title:"Reserve QA "+suffix});
-  await post(technician,"jobStock",{jobId:reserveJobId,partId,kind:"reserve",quantity:"2"});
+  await db.$transaction([
+    db.part.update({where:{id:partId},data:{reserved:"2"}}),
+    db.jobStock.create({data:{documentId:reserveJobId,partId,reserved:"2"}}),
+  ]);
   const inventory = await page(accountant,"/inventory?q="+suffix+"&category=Reconciliation&status=active");
   assert.match(inventory,/Total selling value/);
   assert.match(inventory,/1,000\.00/);

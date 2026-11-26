@@ -75,7 +75,7 @@ export async function RecordView({lang,forms,id}:Props){
       ["Supplier",finance&&row.party?.kind==="supplier"?<Ref href={"/purchasing/"+row.party.id}>{snap.party?.name ?? row.party.name}</Ref>:null],
       ["Vehicle",row.vehicle&&car?<Ref href={"/vehicles/"+row.vehicle.id}>{[carName(car),car.plate].filter(Boolean).join(" · ")}</Ref>:null],
       ["Employee",finance&&row.employee?<Ref href={"/payroll/"+row.employee.id}>{snap.employee?.name ?? row.employee.name}</Ref>:null],
-      ["Technicians",staffText],["Reference",row.reference],
+      ["Technicians",staffText],[row.kind==="purchase"?"Supplier invoice number":"Reference",row.reference],
       ["Related documents",row.source&&(finance||isWorkshopRecord(row.source.kind))?<Ref href={sourcePath+row.source.id}>{row.source.number}</Ref>:null],
       ["Category",row.category],["Notes",row.note],
       [row.kind==="invoice"?"Invoice total":"Total",finance&&!work?<Amt lang={lang} value={row.total}/>:null],

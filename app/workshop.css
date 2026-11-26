@@ -7,8 +7,6 @@
 .log-nav-link:hover{color:var(--text);background:var(--elevated)}
 .log-nav-link.current{background:color-mix(in srgb,var(--accent) 11%,var(--side));border-color:color-mix(in srgb,var(--accent) 23%,transparent);color:var(--text)}
 .log-nav-link.current svg{color:var(--accent)}
-.log-demo{margin:auto 16px 20px;display:flex;align-items:center;gap:9px;padding:11px 12px;background:var(--elevated);border-radius:8px;color:var(--muted);font-size:11px}
-.log-demo span{width:7px;height:7px;border-radius:100%;background:var(--blue)}
 .log-main{min-width:0}
 .log-topbar{position:sticky;top:0;z-index:5;background:var(--side);border-bottom:1px solid var(--edge);display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 28px;min-height:65px}
 .log-route-progress{--route-car-width:64px;display:none;position:absolute;inset-inline:0;inset-block-end:-8px;height:30px;overflow:hidden;pointer-events:none}
@@ -27,10 +25,10 @@
 }
 [dir=rtl] .log-route-progress{--route-progress-direction:-1}
 [dir=rtl] .log-route-car img{transform:none}
-.log-search{display:flex;align-items:center;gap:9px;border:1px solid var(--edge);border-radius:8px;background:var(--bg);padding-inline:11px;color:var(--muted);min-width:0}
+.log-search{display:flex;align-items:center;gap:9px;border:1px solid var(--edge);border-radius:8px;background:var(--bg);padding-inline:11px;color:var(--muted);min-width:0;min-block-size:var(--form-control-height)}
 .log-search svg{flex:none}
 .log-search button{display:grid;place-items:center;border:0;background:transparent;color:inherit;min-height:30px;padding:0;flex:none}
-.log-search input{border:0;outline:none;width:100%;min-height:39px;background:transparent;padding-inline:0}
+.log-search input,.dialog .log-search input{border:0;outline:none;width:100%;min-block-size:calc(var(--form-control-height) - 2px);background:transparent;padding-inline:0}
 .log-search:focus-within{outline:2px solid var(--blue);outline-offset:1px}
 .log-topbar .log-search{width:clamp(210px,36vw,384px)}
 .log-top-actions{display:flex;align-items:center;gap:8px}
@@ -105,9 +103,12 @@
 .log-title{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin:0 0 17px}
 .log-title h1{font-size:clamp(24px,3vw,40px);font-weight:760;letter-spacing:-.04em;overflow-wrap:anywhere}
 .log-title p{color:var(--muted);margin-top:3px}
-.log-filters{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px}
+.log-filters{display:flex;gap:7px;flex-wrap:wrap;align-items:end;margin-bottom:14px}
 .log-filters .log-search{flex:1;min-width:min(180px,100%)}
-.log-filters select{min-height:40px;border-radius:8px}
+.log-content .toolbar{align-items:end}
+.log-content :is(.log-filters,.toolbar,.payroll-week form) :is(select,.button,input:not([type=hidden])){min-block-size:var(--form-control-height)}
+.log-content :is(.log-filters .log-search,.toolbar .search-box) input{min-block-size:calc(var(--form-control-height) - 2px)}
+.log-content :is(.log-filters,.toolbar) .button{white-space:normal;text-align:center}
 .log-stack{display:grid;gap:15px}
 .log-back,.log-related-link,.log-phone{display:inline-flex;align-items:center;gap:6px;color:var(--blue)}
 .log-back{padding:4px 0;margin-bottom:9px}
@@ -124,16 +125,14 @@
 .log-pagination{margin-top:14px}
 .log-saved{margin-bottom:15px}
 .log-dialog{max-width:560px}
-.log-dialog input:not([type=checkbox],[type=radio]),.log-dialog select,.log-dialog textarea{min-height:40px;width:100%;font-size:14px}
 .log-dialog input:disabled,.log-dialog select:disabled{opacity:.58}
-.log-dialog .field{font-size:13px}
 .log-field-help{min-width:0;display:grid;gap:6px;align-content:start}
 .log-field-help.wide{grid-column:1/-1}
 .log-field-help .log-related-link{justify-self:start;font-size:13px}
 .log-checkbox-field{border:0;padding:0;min-width:0}
 .log-checkbox-field legend{padding:0;margin-bottom:6px}
 .log-checkbox-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
-.log-checkbox-option{display:flex;align-items:center;gap:8px;min-height:35px;min-width:0;padding:5px 8px;border:1px solid var(--edge);border-radius:6px;color:var(--text);background:var(--bg);cursor:pointer}
+.log-checkbox-option{display:flex;align-items:center;gap:8px;min-block-size:var(--form-control-height);min-width:0;padding:5px 8px;border:1px solid var(--edge);border-radius:6px;color:var(--text);background:var(--bg);cursor:pointer}
 .log-checkbox-option input{flex:none;margin:0}
 .log-checkbox-option:has(input:checked){background:color-mix(in srgb,var(--accent) 10%,var(--panel));border-color:color-mix(in srgb,var(--accent) 45%,var(--edge))}
 .log-checkbox-option:focus-within{outline:2px solid var(--blue);outline-offset:2px}
@@ -145,9 +144,10 @@
 .log-part-fields{min-width:0;margin:0;border:1px solid var(--edge);border-radius:8px;padding:9px;display:grid;gap:8px}
 .log-part-fields legend{padding:0 5px;color:var(--muted);font-weight:650}
 .log-part-fields-row{display:grid;grid-template-columns:minmax(0,1fr) 76px auto;gap:6px;align-items:center}
-.log-part-fields-row .icon-button{align-self:end;min-height:40px}
-.log-part-picker{display:flex;gap:6px;flex-wrap:wrap}
+.log-part-fields-row .icon-button{align-self:end;min-inline-size:var(--form-control-height);min-block-size:var(--form-control-height)}
+.log-part-picker{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .log-part-picker .log-search{flex:1;min-width:min(175px,100%)}
+.log-part-picker>.button{min-block-size:var(--form-control-height);white-space:normal}
 .log-part-choice{min-width:0;overflow-wrap:anywhere;text-align:start}
 .log-part-choice small{display:block;color:var(--muted)}
 .log-search-choice{display:flex;align-items:center;gap:8px;min-width:0;padding:7px 9px;border:1px solid var(--edge);border-radius:6px;background:var(--bg)}
@@ -157,6 +157,10 @@
 .log-part-results li+li{border-top:1px solid var(--edge-soft)}
 .log-part-results button{width:100%;padding:7px 9px;background:var(--bg);cursor:pointer}
 .log-part-results button:hover,.log-part-results button:focus-visible{background:var(--panel);outline:2px solid var(--blue);outline-offset:-2px}
+.purchase-product-picker .log-part-results li{min-block-size:var(--form-control-height);padding:8px 10px;display:flex;align-items:center;background:var(--bg);cursor:pointer;overflow-wrap:anywhere}
+.purchase-product-picker .log-part-results li:hover,.purchase-product-picker .log-part-results li[aria-selected=true]{background:var(--elevated);outline:2px solid var(--blue);outline-offset:-2px}
+.purchase-product-picker .log-part-results:empty{display:none}
+.purchase-product-picker p{margin:0}
 .log-part-fields p{color:var(--muted);font-size:12px}
 .visit-work-list{margin:0;padding:0;list-style:none}
 .visit-work-list li{padding:8px 14px}
@@ -184,17 +188,24 @@
 .log-optional .form-grid{padding:4px 9px 10px}
 .log-topbar .profile-menu{min-width:145px}
 @media(max-width:1100px){.log-shell{--log-width:185px}.log-content,.log-topbar{padding-inline:18px}}
-@media(max-width:850px){
-  .log-shell{display:block}.log-sidebar{display:none}.log-topbar{padding:9px 12px;min-height:56px;gap:9px}.log-topbar .log-search{flex:1;width:auto}
+@media screen and (max-width:850px){
+  html:has(.log-shell){overflow:clip;overscroll-behavior:none}
+  .log-shell{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto;height:100dvh;overflow:clip}
+  .log-sidebar{display:none}
+  .log-main{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+  .log-topbar{position:relative;padding:9px 12px;min-height:56px;gap:9px}
+  .log-topbar .log-search{flex:1;width:auto}
   .log-mobile-brand{display:block;flex:none}.log-mobile-brand img{border-radius:8px}
   .log-top-actions{gap:2px}.log-top-actions .profile-text,.log-top-actions .profile>svg{display:none}.log-top-actions .avatar{width:28px;height:28px}
-  .log-content{padding:16px 12px calc(72px + env(safe-area-inset-bottom))}
-  .log-dock{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);position:fixed;bottom:0;inset-inline:0;z-index:5;background:var(--side);padding:5px 8px max(5px,env(safe-area-inset-bottom));border-top:1px solid var(--edge)}
+  .log-content{width:100%;padding:16px 12px;overflow:hidden auto;overscroll-behavior:none}
+  .log-content .detail-stack{grid-template-columns:minmax(0,1fr)}
+  .log-content .accounting-filter{min-width:0;max-width:100%}
+  .log-content .table-scroll{overscroll-behavior-x:contain}
+  .log-dock{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);background:var(--side);padding:5px 8px max(5px,env(safe-area-inset-bottom));border-top:1px solid var(--edge)}
   .log-dock .log-nav-link{flex-direction:column;justify-content:center;gap:2px;min-width:0;padding:4px 2px;min-height:43px;font-size:clamp(9px,2.8vw,11px)}
   .log-dock .log-nav-link span{max-width:100%;text-align:center;overflow-wrap:anywhere}
 }
 @media(max-width:590px){
-  .log-topbar .log-search input{min-height:34px;font-size:11px}
   .log-topbar .log-search{padding-inline:6px;gap:5px}.log-topbar .log-search svg{width:14px}
   .log-hero-copy{padding:13px 14px 15px;gap:11px}
   .log-stats{gap:6px;margin:10px 0}.log-stat{padding:8px 7px;gap:6px}.log-stat>svg{display:none}
@@ -263,6 +274,8 @@
 .counter-sale-form{max-width:760px;display:grid;gap:14px;padding:clamp(12px,3vw,20px)}
 .counter-sale-fields,.counter-customer{display:grid;gap:8px;min-width:0}
 .counter-sale-fields{gap:14px}
+.counter-sale-form :is(input,select):not([type=hidden]){min-block-size:var(--form-control-height)}
+.counter-sale-form .log-search input{min-block-size:calc(var(--form-control-height) - 2px)}
 .counter-customer-status{font-size:12px;color:var(--muted)}
 .log-part-price-details{grid-column:1/-1}
 .receipt-print{color:#000}
@@ -281,7 +294,7 @@
 .accounting-totals{display:flex;flex-wrap:wrap;gap:12px 28px;padding:12px 15px;margin:0}
 .accounting-totals dt,.accounting-filter,.accounting-period{color:var(--muted);font-size:12px}
 .accounting-totals dd{margin:3px 0 0;font-size:20px;font-weight:720;font-variant-numeric:tabular-nums}
-.accounting-filter,.accounting-entries{display:grid;gap:4px}
+.accounting-filter,.accounting-entries{display:grid;gap:4px;min-width:0}
 .accounting-entries small{color:var(--muted)}
 .accounting-period{display:block}
 .attendance-actions{display:flex;gap:5px;flex-wrap:wrap;min-width:185px}
@@ -290,12 +303,15 @@
 .attendance-status{display:inline-flex;width:max-content;padding:3px 6px;border-radius:5px;font-weight:650}
 .attendance-absent{color:#fff!important;background:#a6212b!important;border-color:#a6212b!important}
 .attendance-half{color:#fff!important;background:#1d4ed8!important;border-color:#1d4ed8!important}
-@media screen and (max-width:768px){
+@media screen and (max-width:850px){
+  :where(.log-shell,.dialog){--form-control-height:44px}
   .log-shell :is(input:not([type=checkbox],[type=radio],[type=hidden]),select,textarea),
-  .login-form input,.log-topbar .log-search input,.log-dialog input:not([type=checkbox],[type=radio]),.log-dialog select,.log-dialog textarea{font-size:16px}
-  .log-shell :is(.button,.icon-button,.log-search button),.login-form .button,.log-dialog .icon-button,
+  .dialog :is(input:not([type=checkbox],[type=radio],[type=hidden]),select,textarea),.login-form input{font-size:16px}
+  .log-shell :is(.button,.icon-button,.log-search button),.login-form .button,
   .log-content .attendance-actions .button{min-block-size:44px;min-inline-size:44px}
   .log-shell :is(.log-row-main small,.log-dialog .field,.accounting-entries small){font-size:14px;color:var(--muted)}
+}
+@media screen and (max-width:768px){
   .table-sticky-key :is(th,td):first-child{position:sticky;inset-inline-start:0;z-index:1;background:var(--panel)}
   .table-sticky-key :is(th,td):first-child .attendance-actions{min-inline-size:0;max-inline-size:135px}
   .table-sticky-key :is(th,td):first-child .attendance-actions .button{white-space:normal;text-align:start}

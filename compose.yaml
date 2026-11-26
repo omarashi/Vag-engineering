@@ -21,10 +21,9 @@ services:
       DATABASE_URL: postgresql://vag:${POSTGRES_PASSWORD}@db:5432/vag
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:?Set BETTER_AUTH_URL}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET}
-      BOOTSTRAP_EMAIL: ${BOOTSTRAP_EMAIL:-}
+      BOOTSTRAP_USERNAME: ${BOOTSTRAP_USERNAME:-}
       BOOTSTRAP_NAME: ${BOOTSTRAP_NAME:-}
       BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-}
-      VAG_DEMO: ${VAG_DEMO:-false}
     depends_on:
       db:
         condition: service_healthy

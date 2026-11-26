@@ -50,7 +50,7 @@ export default async function Page({ params, searchParams }: {
   );
   const content = Object.hasOwn(pages, route) ? pages[route as keyof typeof pages]() :
     <OfficePage lang={lang} route={route} id={id} actor={user} query={officeQuery}/>;
-  return <Shell lang={lang} theme={theme} user={{name:user.name,role:user.role}} demo={process.env.VAG_DEMO === "true"}>
+  return <Shell lang={lang} theme={theme} user={{name:user.name,role:user.role}}>
     {route !== "debts" && ["1","duplicate"].includes(read("saved")) && <p className="notice log-saved" role="status">{read("saved")==="duplicate" ? message(lang, "duplicateParty") : translate(lang, "Saved")}</p>}
     {content}
   </Shell>;

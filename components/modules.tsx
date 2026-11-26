@@ -116,7 +116,7 @@ export async function Purchasing({lang,forms,query}:ModuleProps){
     .map((item)=>({value:supplierQuoteCode(item),description:item.description,brand:item.brand,cost:item.cost.toFixed(2),
       version:item.version ?? 0,linked:Boolean(item.partId)})) : [];
   return <><Heading lang={lang} title="Suppliers & purchasing">
-    <Actions lang={lang} forms={forms} specs={[{...forms.purchase("purchase"),purchaseQuotes},forms.purchase("purchaseOrder"),forms.party("supplier")]} auto={query.new}/>
+    <Actions lang={lang} forms={forms} specs={[{...forms.purchase("purchase"),purchaseQuotes},forms.party("supplier")]} auto={query.new}/>
     {forms.can("purchase")&&<ButtonLink href="/purchasing/price-list">{tr("Supplier price list")}</ButtonLink>}
   </Heading>
     <Toolbar lang={lang} path="/purchasing" filters={query} dateRange party={forms.adapters.supplier}/>
@@ -261,7 +261,7 @@ export async function Settings({lang,forms,query}:ModuleProps){
   const manageAccounts=forms.can("account");
   const [settings,catalogue,users,accounts]=await Promise.all([
     db.setting.findMany({where:{key:{in:["business","prefixes"]}}}),db.catalog.findMany({orderBy:[{group:"asc"},{name:"asc"}]}),
-    forms.can("user")?db.user.findMany({select:{id:true,name:true,email:true,role:true,active:true,updatedAt:true},orderBy:{name:"asc"}}):[],
+    forms.can("user")?db.user.findMany({select:{id:true,name:true,username:true,role:true,active:true,updatedAt:true},orderBy:{name:"asc"}}):[],
     manageAccounts?db.moneyAccount.findMany({orderBy:[{archived:"asc"},{name:"asc"}]}):[],
   ]);
   const business=(settings.find((row)=>row.key==="business")?.value ?? {}) as Record<string,string>;
@@ -276,8 +276,8 @@ export async function Settings({lang,forms,query}:ModuleProps){
       ])}/></Panel>}
       <Panel title={tr("Catalogue")}><Register lang={lang} head={["Type","Name","Description","Price","Action"]} rows={plain(catalogue).map((row)=>[
         label(lang,row.group),<bdi>{row.name}</bdi>,<bdi>{row.description}</bdi>,<Amt lang={lang} value={row.price}/>,forms.can("catalogue")?<ActionForm lang={lang} spec={forms.catalogue(row)}/>:null,
-      ])}/></Panel>{forms.can("user")&&<Panel title={tr("Users")}><Register lang={lang} head={["Name","Email","Role","Status","Action"]} rows={plain(users).map((row)=>[
-        <bdi>{row.name}</bdi>,<bdi>{row.email}</bdi>,label(lang,row.role),tr(row.active?"Active":"Disabled"),
+      ])}/></Panel>{forms.can("user")&&<Panel title={tr("Users")}><Register lang={lang} head={["Name","Username","Role","Status","Action"]} rows={plain(users).map((row)=>[
+        <bdi>{row.name}</bdi>,<bdi>{row.username}</bdi>,label(lang,row.role),tr(row.active?"Active":"Disabled"),
         <ActionForm lang={lang} spec={forms.user(row,activeOwners.length===1&&activeOwners[0].id===row.id)}/>,
       ])}/></Panel>}</div></>;
 }

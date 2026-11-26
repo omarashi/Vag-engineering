@@ -10,7 +10,7 @@ const db = new PrismaClient({ adapter: new PrismaPg({ connectionString: process.
 const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo" }).format(new Date());
 const sample = "Role QA " + randomUUID().slice(0, 8);
 
-const login = (email, password, permitted) => signIn(base, email, password, permitted);
+const login = (username, password, permitted) => signIn(base, username, password, permitted);
 
 function get(session, path) {
   return fetch(base + path, { headers: { Cookie: session }, redirect: "manual" });
@@ -40,26 +40,35 @@ async function attach(session, target, status) {
 }
 
 try {
-  const owner = await login("owner@vag-demo.test");
-  const accountant = await login("accountant@vag-demo.test");
-  const email = `worker-${sample.slice(-8)}@vag-demo.test`;
+  const owner = await login("owner");
+  const accountant = await login("accountant");
+  const username = `worker-${sample.slice(-8)}`;
   const password = `Initial-${randomUUID()}`;
-  const loginProfile = { name: sample + " Technician", email, role: "technician", password, active: true };
-  assert.match(await page(owner, "/settings"), /Add user/);
+  const loginProfile = { name: sample + " Technician", username, role: "technician", password, active: true };
+  const settingsPage = await page(owner, "/settings");
+  assert.match(settingsPage, /Add user/);
+  assert.match(settingsPage, /Username/);
+  const emailSignIn = await fetch(base + "/api/auth/sign-in/email", {
+    method: "POST", headers: { Origin: base, "Content-Type": "application/json" },
+    body: JSON.stringify({ email: "owner@vag-demo.test", password: "Demo-Workshop-2026!" }),
+  });
+  assert.equal(emailSignIn.status, 404);
   await page(owner, "/audit");
   for (const name of ["settings", "user", "account", "catalogue"]) await action(accountant, name, loginProfile, 403);
   for (const path of ["/settings", "/audit"]) await page(accountant, path, 404);
   assert.doesNotMatch(await page(accountant, "/more"), /href="\/(settings|audit)"/);
+  assert.equal((await action(owner, "user", { ...loginProfile, username: "name@example.test" }, 422)).error, "invalidUsername");
   const { id: userId } = await action(owner, "user", loginProfile);
-  const technician = await login(email, password);
+  assert.equal((await action(owner, "user", { ...loginProfile, username: username.toUpperCase() }, 409)).error, "duplicateUsername");
+  const technician = await login(" " + username.toUpperCase() + " ", password);
   const editLogin = async (changes) => {
     const row = await db.user.findUniqueOrThrow({ where: { id: userId } });
-    return action(owner, "user", { id: row.id, name: row.name, email: row.email, role: row.role, active: row.active, updatedAt: row.updatedAt, ...changes });
+    return action(owner, "user", { id: row.id, name: row.name, username: row.username, role: row.role, active: row.active, updatedAt: row.updatedAt, ...changes });
   };
-  const ownerAccount = await db.user.findUniqueOrThrow({ where: { email: "owner@vag-demo.test" } });
+  const ownerAccount = await db.user.findUniqueOrThrow({ where: { username: "owner" } });
   for (const changes of [{ active: false }, { role: "accountant" }]) {
     const { error } = await action(owner, "user", { id: ownerAccount.id, updatedAt: ownerAccount.updatedAt,
-      name: ownerAccount.name, email: ownerAccount.email, role: "owner", active: true, ...changes }, 422);
+      name: ownerAccount.name, username: ownerAccount.username, role: "owner", active: true, ...changes }, 422);
     assert.equal(error, "lastOwner");
   }
 
@@ -123,11 +132,13 @@ try {
   const replacement = `Reset-${randomUUID()}`;
   await editLogin({ password: replacement });
   await page(technician, "/jobs", 307);
-  await login(email, password, false);
-  const resetSession = await login(email, replacement);
-  await editLogin({ role: "accountant" });
+  await login(username, password, false);
+  const resetSession = await login(username, replacement);
+  const renamed = username + "-2";
+  await editLogin({ role: "accountant", username: renamed });
   await page(resetSession, "/jobs", 307);
-  const promoted = await login(email, replacement);
+  assert.equal(await db.user.findUnique({ where: { username } }), null);
+  const promoted = await login(renamed, replacement);
   await page(promoted, "/reports");
   const recoveryKey = randomUUID();
   const { id: expenseId } = await action(promoted, "expense", { title: sample, category: "Test", amount: "10", at: day }, 200, recoveryKey);
@@ -135,16 +146,17 @@ try {
   await editLogin({ active: false, role: "technician" });
   await page(promoted, "/jobs", 307);
   assert.equal(await db.session.count({ where: { userId } }), 0);
-  await login(email, replacement, false);
+  await login(renamed, replacement, false);
   await editLogin({ active: true });
   await page(promoted, "/jobs", 307);
-  const enabled = await login(email, replacement);
+  const enabled = await login(renamed, replacement);
   await page(enabled, "/reports", 404);
   await page(enabled, "/api/requests/" + recoveryKey, 404);
   const history = await db.audit.findMany({ where: { action: "user", entityId: userId } });
   assert.equal(history.length, 5);
   assert.ok(history.some(({ after }) => after.passwordReset === true));
   assert.ok(history.some(({ before, after }) => before?.role === "technician" && after.role === "accountant"));
+  assert.ok(history.some(({ before, after }) => before?.username === username && after.username === renamed));
   assert.ok(history.some(({ after }) => after.active === false));
   assert.doesNotMatch(JSON.stringify(history), new RegExp(replacement));
   console.log("PASS role navigation, technician-to-accountant billing and print, files, exports, account audit, session revocation, and last Owner protection.");

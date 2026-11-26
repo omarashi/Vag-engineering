@@ -116,7 +116,7 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
       return field.type === "checkboxes" ? !Array.isArray(value) || value.length === 0 : !String(value ?? "").trim();
     });
     if (!form.checkValidity() || missing) {
-      setError(missing?.type === "checkboxes" ? "needServices" : "invalid");
+      setError(missing?.type === "checkboxes" ? "needServices" : missing?.key === "paymentChannel" ? "invalidPaymentChannel" : "invalid");
       const first = missing
         ? form.querySelector<HTMLElement>('[name="' + missing.key + '"]') ?? form.querySelector<HTMLElement>('[data-search-for="' + missing.key + '"]')
         : form.querySelector<HTMLElement>(":invalid");

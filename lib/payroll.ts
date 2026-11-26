@@ -295,7 +295,8 @@ export async function weeklyPayroll(tx: Tx, input: Input, actor: Actor): Promise
     return { id:period.id, entity:"document", before:period, after:{ deduction:deduction?.after, review }, warning:"payrollExcessReview" };
   }
   const cash = await payment(tx, {
-    kind, employeeId, at, amount: moneyInput(amount), accountId: input.accountId, method: input.method, note: input.note,
+    kind, employeeId, at, amount: moneyInput(amount), accountId: input.accountId, method: input.method,
+    paymentChannel: input.paymentChannel, note: input.note,
     allocations: applied > 0n ? [{ documentId: period.id, amount: moneyInput(applied) }] : [],
   }, actor);
   if (!excess) return cash;

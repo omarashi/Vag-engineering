@@ -2,7 +2,7 @@
 
 ## Release checks
 
-Run `npm run check`, `npm test`, `npm run build`, and `npm run test:workflows`. The workflow runner uses `TEST_DATABASE_ADMIN_URL` and separates acceptance, receipt, role, accountant, browser, photo and mobile fixtures. Use `npm run test:accountant` for the accounting suite against a running isolated demo with `TEST_URL` and a `DATABASE_URL` ending in `_test`.
+Run `npm run check`, `npm test`, `npm run build`, and `npm run test:workflows`. The workflow runner uses `TEST_DATABASE_ADMIN_URL` and separates acceptance, receipt, role, accountant, browser, photo and mobile fixtures. Use `npm run test:accountant` for the accounting suite against an isolated test instance with `TEST_URL` and a `DATABASE_URL` ending in `_test`.
 
 Check payroll lock and reopen, excess recovery and waiver, stock totals and CSV access. The mobile suite checks 320, 375, 390, 414 and 768 px in English and Arabic, runs automated accessibility checks, and verifies that browser Back preserves a draft when discard is declined. Before release, verify input focus on a physical iPhone in Safari and the native Back gesture on Android. Rehearse recovery in a separate database and attachment directory.
 
@@ -14,7 +14,7 @@ Verification ran on Windows with Next.js 16.4.6, Prisma 7.10.1, Better Auth 1.7.
 
 | Check | Result |
 | --- | --- |
-| Initial migration and demo bootstrap | Applied on an isolated UTF-8 PostgreSQL database. |
+| Initial migration, owner bootstrap, and test fixtures | Applied on an isolated UTF-8 PostgreSQL database. |
 | TypeScript, production build and unit tests | Passed. Four focused unit tests covered EGP precision, Cairo dates, role rules and attachment signatures. |
 | Authenticated HTTP acceptance and receipt tests | Cover workshop validation, retired statuses, technician access, concurrent sales, transaction rollback, idempotent receipt replay, debt reconciliation, returns, reversals and salary advances. |
 | Browser | Job creation and update, module navigation, simulated lost response and safe retry, 360 px layout, dark and light themes, and Arabic RTL passed. |

@@ -20,8 +20,8 @@ const directory = await mkdtemp(join(tmpdir(), "vag-photo-test-"));
 const largePhoto = join(directory, "large-camera-photo.jpg");
 
 try {
-  const login = await page.request.post(base + "/api/auth/sign-in/email", {
-    headers: { Origin: base }, data: { email: "owner@vag-demo.test", password: "Demo-Workshop-2026!" },
+  const login = await page.request.post(base + "/api/auth/sign-in/username", {
+    headers: { Origin: base }, data: { username: "owner", password: "Demo-Workshop-2026!" },
   });
   assert.equal(login.status(), 200);
   const business = (await db.setting.findUnique({ where: { key: "business" } }))?.value ?? {};

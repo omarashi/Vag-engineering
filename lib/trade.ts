@@ -88,8 +88,10 @@ export async function purchase(tx:Tx,input:Input,actor:Actor):Promise<Change>{
   const order=sourceId ? await tx.document.findFirst({where:{id:sourceId,kind:"purchaseOrder",status:"draft"},include:{lines:true}}) : null;
   requireRule(!sourceId || order,"alreadyPosted",409);
   const partyId=await validParty(tx,order?.partyId ?? input.partyId,"supplier");
-  const reference=needed(input.reference,120);
-  requireRule(!(await tx.document.findFirst({where:{partyId,kind:"purchase",status:"posted",reference:{equals:reference,mode:"insensitive"}}})),"duplicateReference",409);
+  const reference=text(input.reference,120);
+  if (reference) {
+    requireRule(!(await tx.document.findFirst({where:{partyId,kind:"purchase",status:"posted",reference:{equals:reference,mode:"insensitive"}}})),"duplicateReference",409);
+  }
   const rows=order && !input.lines ? order.lines.map(({kind,description,partId,quantity,price,discount,total,position,id})=>({
     kind,description,partId,quantity,price,discount,total,position,sourceId:id})) :
     order ? await lines(tx,input.lines,{onlyParts:true}) : await purchaseLines(tx,input.lines,actor);

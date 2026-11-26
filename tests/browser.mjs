@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { browserFixtures, launchBrowser } from "./support/browser.mjs";
 
 const base = process.env.TEST_URL;
-if (!base) throw Error("Set TEST_URL to the isolated demo instance.");
+if (!base) throw Error("Set TEST_URL to the isolated test instance.");
 const browser = await launchBrowser();
 const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
 const fixture = browserFixtures(page, base);
@@ -13,8 +13,36 @@ page.on("pageerror", (error) => errors.push(error.message));
 const proofs = "test-results/v2/" + randomUUID().slice(0,8);
 await mkdir(proofs, { recursive: true });
 try {
+  for (const remember of [false, true]) {
+    const login = await browser.newPage();
+    try {
+      await login.goto(base + "/login");
+      assert.equal(await login.getByRole("button", { name: "Forgot Password?" }).count(), 0);
+      await login.getByLabel("Username").fill("owner");
+      await login.getByLabel("Password", { exact: true }).fill("Demo-Workshop-2026!");
+      await login.getByRole("checkbox", { name: "Remember Me" }).setChecked(remember);
+      await login.getByRole("button", { name: "SIGN IN", exact: true }).click();
+      await login.waitForURL("**/overview");
+      const cookies = await login.context().cookies(base);
+      const session = cookies.find(({ name }) => name.endsWith(".session_token"));
+      assert.ok(session?.httpOnly, "Signing in should set an HTTP-only session cookie");
+      if (remember) {
+        assert.ok(session.expires > Date.now() / 1000, "Remember me should set a persistent session cookie");
+      } else {
+        assert.equal(session.expires, -1, "The default session cookie should expire when the browser closes");
+      }
+    } finally {
+      await login.close();
+    }
+  }
   await page.goto(base + "/login");
-  await page.getByRole("button", { name: "Open demo workspace" }).click();
+  assert.equal(await page.getByRole("button", { name: "Open demo workspace" }).count(), 0);
+  await page.getByLabel("Username").fill("owner");
+  await page.getByLabel("Password", { exact: true }).fill("Demo-Workshop-2026!");
+  await page.getByRole("button", { name: "SIGN IN", exact: true }).click();
+  await page.waitForURL("**/overview");
+  assert.equal(await page.getByText("Demonstration data", { exact: true }).count(), 0);
+  await page.locator(".log-sidebar").getByRole("link", { name: "Jobs", exact: true }).click();
   await page.getByRole("heading", { name: "Jobs", exact: true }).waitFor();
   assert.equal(new URL(page.url()).pathname, "/jobs");
   await page.locator(".log-sidebar .log-nav-link").first().waitFor();
@@ -43,6 +71,66 @@ try {
   const oilFilterId = await fixture("part", { name: "Oil filter", code: code + "-FILTER", price: "125", cost: "65" });
   await fixture("stock", { partId, quantity: "6", kind: "adjustment", reason: "Invoice print test" });
   await fixture("stock", { partId: oilFilterId, quantity: "1", kind: "adjustment", reason: "Counter sale test" });
+
+  const supplierId = await fixture("supplier", { name: "Purchase QA " + code });
+  const inventoryName = "Rotor assembly " + code;
+  const inventoryId = await fixture("part", { name: inventoryName, code: code + "-ROTOR", price: "150", cost: "76" });
+  await fixture("supplierQuote", { brand: "QA Parts", description: "Brake caliper " + code, cost: "123.45" });
+  async function postPurchaseDialog(dialog) {
+    const previous = page.url();
+    await dialog.getByRole("button", { name: "Post", exact: true }).click();
+    await dialog.getByRole("button", { name: "Confirm posting", exact: true }).click();
+    await page.waitForURL((url) => url.pathname.startsWith("/record/") && url.href !== previous);
+  }
+  await page.goto(base + "/purchasing");
+  assert.equal(await page.getByRole("button", { name: "New purchase order", exact: true }).count(), 0);
+  await page.getByRole("button", { name: "New purchase", exact: true }).click();
+  const purchase = page.getByRole("dialog", { name: "New purchase", exact: true });
+  await purchase.getByRole("combobox", { name: /^Supplier\b/ }).selectOption(supplierId);
+  const supplierNumber = purchase.getByLabel("Supplier invoice number (optional)", { exact: true });
+  assert.equal(await supplierNumber.getAttribute("required"), null);
+  const inventoryPicker = purchase.getByRole("combobox", { name: "Search inventory" });
+  await inventoryPicker.fill("no such item");
+  await inventoryPicker.press("Enter");
+  await purchase.getByRole("status").getByText("No matching parts", { exact: true }).waitFor();
+  assert.equal(await purchase.getByRole("button", { name: "Confirm posting", exact: true }).count(), 0);
+  await inventoryPicker.fill("rotor " + code.toLowerCase());
+  await purchase.getByRole("option", { name: code + "-ROTOR · " + inventoryName, exact: true }).waitFor();
+  await inventoryPicker.press("ArrowDown");
+  await inventoryPicker.press("Enter");
+  assert.equal(await purchase.getByLabel("Unit cost (EGP)", { exact: true }).inputValue(), "76.00");
+  await purchase.getByRole("button", { name: "Add line", exact: true }).click();
+  const listLine = purchase.locator(".line-row").last();
+  await listLine.getByRole("combobox", { name: /^Product source/ }).selectOption("quote");
+  await listLine.getByRole("combobox", { name: "Search price list" }).fill("caliper qa parts");
+  await listLine.getByRole("option", { name: "QA Parts · Brake caliper " + code, exact: true }).click();
+  assert.equal(await listLine.getByLabel("Unit cost (EGP)", { exact: true }).inputValue(), "123.45");
+  await listLine.getByLabel("Selling price (EGP)", { exact: true }).fill("190");
+  await postPurchaseDialog(purchase);
+  await page.getByRole("table").getByRole("link", { name: "Brake caliper " + code, exact: true }).waitFor();
+
+  const orderId = await fixture("purchaseOrder", {
+    partyId: supplierId, lines: [{ kind: "part", partId: inventoryId, quantity: "1", price: "76" }],
+  });
+  await page.goto(base + "/record/" + orderId);
+  await page.getByRole("button", { name: "Receive order", exact: true }).click();
+  const receiveOrder = page.getByRole("dialog", { name: "Receive order", exact: true });
+  assert.equal(await receiveOrder.getByLabel("Supplier invoice number (optional)", { exact: true }).inputValue(), "");
+  await postPurchaseDialog(receiveOrder);
+
+  const numberedPurchase = { partyId: supplierId, reference: code + "-SUPPLIER",
+    lines: [{ kind: "part", partId: inventoryId, quantity: "1", price: "76" }] };
+  const numberedId = await fixture("purchase", numberedPurchase);
+  await page.goto(base + "/record/" + numberedId);
+  await page.getByText("Supplier invoice number", { exact: true }).waitFor();
+  await page.getByText(numberedPurchase.reference, { exact: true }).waitFor();
+  const duplicatePurchase = await page.request.post(base + "/api/actions/purchase", {
+    headers: { Origin: base, "Idempotency-Key": randomUUID() },
+    data: { ...numberedPurchase, reference: numberedPurchase.reference.toLowerCase() },
+  });
+  assert.equal(duplicatePurchase.status(), 409);
+  assert.equal((await duplicatePurchase.json()).error, "duplicateReference");
+
   await page.goto(base + "/counter-sale");
   const counterName = page.getByLabel("Customer name");
   const counterSearch = page.getByRole("searchbox", { name: "Search parts", exact: true });
@@ -72,14 +160,18 @@ try {
 
   const jobParty = await fixture("customer", { name: "Job billing " + code });
   const jobCar = await fixture("vehicle", { partyId: jobParty, model: "Golf", color: "Silver" });
+  const receiver = "Mona " + code;
+  await fixture("employee", {name:receiver,startedAt:"2025-11-01"});
   await page.goto(base + "/jobs");
   await page.getByRole("button", { name: "New job", exact: true }).click();
   const newJob = page.getByRole("dialog", { name: "New job", exact: true });
-  await newJob.getByRole("combobox", { name: "Customer", exact: true }).selectOption(jobParty);
+  const customerSearch = newJob.getByRole("searchbox", { name: "Search by customer name or phone", exact: true });
+  await customerSearch.fill("Job billing " + code);
+  await customerSearch.press("Enter");
   await newJob.getByRole("combobox", { name: "Car", exact: true }).selectOption({ label: "Golf Silver" });
   assert.equal(await newJob.getByRole("combobox", { name: "Car", exact: true }).inputValue(), jobCar);
   await newJob.getByRole("radio", { name: /Car stays at the shop/ }).check();
-  await newJob.getByLabel("Received by").fill("Mona " + code);
+  await newJob.getByLabel("Received by").selectOption(receiver);
   await newJob.getByLabel("Date received").fill("2025-11-17");
   await newJob.getByRole("checkbox", { name: "Diagnostics", exact: true }).check();
   await newJob.getByLabel("Details for Diagnostics").fill("Troubleshoot an intermittent electrical issue");
@@ -111,8 +203,9 @@ try {
   assert.match(await stayReceipt.getByLabel("Invoice total").innerText(),/400\.00/);
   await stayReceipt.getByLabel("Amount paid (EGP)").fill("150");
   const receiveVia=stayReceipt.getByLabel("Receive payment via");
+  assert.equal(await receiveVia.getAttribute("name"),"paymentChannel");
   assert.equal(await stayReceipt.getByLabel("Cash handed over (EGP)").count(),0);
-  await receiveVia.selectOption({ label: "Cash · Workshop cash" });
+  await receiveVia.selectOption({ label: "C · كاش" });
   await stayReceipt.getByRole("button", { name: "Save invoice and receipt", exact: true }).click();
   await page.waitForURL("**/payment/**");
   await page.locator(".receipt-details").getByText("Troubleshoot an intermittent electrical issue", { exact: true }).waitFor();
@@ -131,13 +224,13 @@ try {
   await page.getByRole("button", { name: "Record a receipt", exact: true }).click();
   const remainder = page.getByRole("dialog", { name: "Record a receipt" });
   assert.equal(await remainder.getByLabel("Amount paid (EGP)").inputValue(), "250.00");
-  await remainder.getByLabel("Receive payment via").selectOption({label:"Card · M1"});
+  await remainder.getByLabel("Receive payment via").selectOption({label:"M1 · ماكينة ١"});
   await remainder.getByRole("button", { name: "Save receipt", exact: true }).click();
   await page.waitForURL("**/payment/**");
   const cardReceiptNumber=await page.getByRole("heading",{name:/^RCT-/}).innerText();
-  assert.equal(await page.getByText("M1",{exact:true}).count(),0);
+  assert.equal(await page.getByText("M1 · ماكينة ١",{exact:true}).count(),0);
   await page.goto(base+"/cash/transactions?"+new URLSearchParams({q:cardReceiptNumber}));
-  await page.getByRole("cell",{name:"M1",exact:true}).waitFor();
+  await page.getByRole("cell",{name:"M1 · ماكينة ١",exact:true}).waitFor();
   await page.goto(base + stayPath);
   assert.equal(await page.getByRole("button", { name: "Record a receipt", exact: true }).count(), 0);
   await page.goto(base + "/jobs/history?" + new URLSearchParams({ q: code }));
@@ -228,7 +321,7 @@ try {
   assert.equal(await visit.locator('[name="title"]').count(), 0);
   await page.screenshot({ path: proofs + "/job-check-in-eg-phone.png", fullPage: true, caret: "initial" });
   await visit.getByRole("radio", { name: /شغل سريع/ }).check();
-  await visit.getByLabel("مين استلم العربية").fill("أحمد");
+  await visit.getByLabel("مين استلم العربية").selectOption(receiver);
   await visit.getByLabel("ملاحظات").fill("راجعنا قراءات البوست بعد البرمجة");
   await visit.getByRole("button", { name: "احفظ وسجّل الدفع" }).click();
   await visit.getByRole("alert").getByText("اختار نوع شغل واحد على الأقل.").waitFor();
@@ -297,7 +390,7 @@ try {
   const receipt = page.getByRole("dialog", { name: "سجّل إيصال" });
   assert.equal(await receipt.getByLabel("سعر صيانة دورية", { exact: true }).count(), 0);
   await receipt.getByLabel("المبلغ المدفوع (جنيه)").fill("٤٥٠");
-  await receipt.getByLabel("استلام الدفع عن طريق").selectOption({ label: "نقدي · Workshop cash" });
+  await receipt.getByLabel("استلام الدفع عن طريق").selectOption({ label: "C · كاش" });
   await receipt.getByRole("button", { name: "احفظ الإيصال" }).click();
   await page.waitForURL("**/payment/**");
   const receiptDetails = page.locator(".receipt-details");
@@ -406,6 +499,6 @@ try {
   await receiptLink.click();
   assert.match(await page.locator(".receipt-totals dd").last().innerText(), /٥٠٠٫٠٠/);
   assert.deepEqual(errors, []);
-  console.log("PASS Jobs startup, job intake, open and delivered views, English desktop and Egyptian Arabic mobile, billing, debts, and bilingual print.");
+  console.log("PASS purchase search and optional supplier invoice number, jobs, mobile, billing, debts, and bilingual print.");
 } finally { await browser.close(); }
 

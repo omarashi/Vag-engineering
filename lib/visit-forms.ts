@@ -9,7 +9,7 @@ import { today } from "./rules";
 import { recordedDeliveryDate } from "./visits";
 import { carName } from "./car-name";
 import { workshopPhotoLimit } from "./workshop-photo-limits";
-import { receiptDestinations } from "./payment-options";
+import { paymentChannelField } from "./payment-options";
 
 const field = (key: string, label: string, value = "", options: Partial<Field> = {}): Field => ({ key, label, value, ...options });
 const pick = (key: string, label: string, value: string, options: Option[], more: Partial<Field> = {}) =>
@@ -21,9 +21,8 @@ export function receiptAccounts() {
 }
 
 export function receiptFields(lang: Language, accounts: Awaited<ReturnType<typeof receiptAccounts>>, quick = false): Field[] {
-  const {options,initial}=receiptDestinations(lang,accounts);
   return [
-    pick("receiptDestination", "Receive payment via", initial, options, { wide:true }),
+    paymentChannelField(lang,accounts,"Receive payment via"),
     field("amount", "Amount paid (EGP)", "", { inputMode:"decimal", ltr:true, required:true, autoFocus:quick }),
     field("at", "Payment date", today(), { type: "date", ltr: true, required: true, max: today(), advanced: true }),
     field("note", "Notes", "", { advanced: true, type: "textarea", wide: true }),
@@ -202,10 +201,10 @@ export function jobForm(lang: Language, { row, customerId, carId, customers = []
     ...(selecting ? { relatedLink: { field: "vehicleId", owner: "partyId", href: "/customers/$id?new=vehicle&next=job", label: "Add a car for this customer" } } : {}),
     fields: [
       ...(selecting && !customerId ? [pick("partyId", "Customer", "", customers, {
-        type: "searchSelect", searchPlaceholder: "Search by customer name or phone",
+        type: "searchSelect", wide: true, searchPlaceholder: "Search by customer name or phone",
         helpLink: { href: newCustomerForJob, label: newCustomerLabel },
       })] : []),
-      ...(selecting ? [pick("vehicleId", "Car", "", cars, { depends: "partyId" })] : []),
+      ...(selecting ? [pick("vehicleId", "Car", "", cars, { wide: true, depends: "partyId" })] : []),
       ...(!legacy ? [
         ...(canChangeType ? [field("jobMode", "Job type", jobMode, {
           type: "radio", required: true,

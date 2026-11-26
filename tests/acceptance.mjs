@@ -4,7 +4,7 @@ import { postAction, signIn } from "./support/http.mjs";
 
 const base = process.env.TEST_URL;
 if (!base) throw Error("Set TEST_URL to the isolated demo instance.");
-const cookie = await signIn(base, "technician@vag-demo.test");
+const cookie = await signIn(base, "technician");
 function action(name, data, key = randomUUID(), signed = true) {
   return postAction(base, signed ? cookie : "", name, data, key);
 }

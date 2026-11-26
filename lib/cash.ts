@@ -7,17 +7,17 @@ import { number, type Actor, type Change } from "./transaction";
 import { checkVersion, type Input } from "./masters";
 import { openCustomerDebts } from "./customer-debt";
 import { payrollLocked, pendingAbsencesForWeek, requirePayrollOpen } from "./payroll-rules";
-import { receiptMethods } from "./payment-options";
+import { accountPaymentMethods, isCustomPaymentMethod } from "./payment-options";
 
 const destinations: Partial<Record<PaymentKind, Document["kind"][]>>={
   receipt:["invoice","customerOpening"],supplierPayment:["purchase","supplierOpening"],
   refund:["credit"],supplierRefund:["supplierCredit"],expensePayment:["expense"],
   salaryPayment:["payroll","employeeOpening"],advance:["payroll","employeeOpening"],
 };
-async function cashAccount(tx:Tx,input:unknown){
+async function cashAccount(tx:Tx,input:unknown,error="invalidAccount"){
   const id=needed(input);
   const account=await tx.moneyAccount.findFirst({where:{id,archived:false},select:{id:true,kind:true}});
-  requireRule(account,"invalidAccount");
+  requireRule(account,error);
   return account;
 }
 async function employeeId(tx:Tx,input:unknown){
@@ -63,13 +63,18 @@ async function postPayment(tx:Tx,input:Input,actor:Actor,debt?:{allocations:Prep
   const signed=kind==="cashOpening";
   const amount=cents(input.amount,signed);
   requireRule(signed ? amount!==0n : amount>0n,"amountMismatch");
-  const combined=kind==="receipt" && input.receiptDestination!==undefined;
-  const destination=combined ? text(input.receiptDestination,160) : "";
-  const separator=destination.indexOf(":");
-  requireRule(!combined || separator>0 && separator<destination.length-1,"invalidAccount");
+  const channel=input.paymentChannel!==undefined ? input.paymentChannel : kind==="receipt" ? input.receiptDestination : undefined;
+  const error=input.paymentChannel!==undefined ? "invalidPaymentChannel" : "invalidAccount";
+  const combined=channel!==undefined;
+  const destination=combined ? text(channel,280) : "";
+  const separator=destination.lastIndexOf(":");
+  requireRule(!combined || kind!=="transfer" && separator>0 && separator<destination.length-1,error);
   const requestedMethod=destination.slice(0,separator);
-  const account=await cashAccount(tx,combined ? destination.slice(separator+1) : input.accountId);
-  requireRule(!combined || receiptMethods(account.kind).includes(requestedMethod),"invalidAccount");
+  const account=await cashAccount(tx,combined ? destination.slice(separator+1) : input.accountId,error);
+  if(combined && !accountPaymentMethods(account.kind).includes(requestedMethod)){
+    requireRule(kind!=="receipt" && isCustomPaymentMethod(requestedMethod) &&
+      await tx.catalog.findFirst({where:{group:"paymentMethod",name:requestedMethod,archived:false}}),error);
+  }
   const accountId=account.id;
   const at=date(input.at);
   const receivedOn=kind==="receipt"?today(at):undefined;
@@ -180,12 +185,12 @@ export async function expense(tx:Tx,input:Input,actor:Actor):Promise<Change>{
 export async function paidExpense(tx:Tx,input:Input,actor:Actor):Promise<Change>{
   const at=needed(input.at,10);
   requireRule(today(date(at))<=today(),"invalidDate");
-  const method=needed(input.method,80);
+  const method=input.paymentChannel===undefined ? needed(input.method,80) : undefined;
   const entry=await expense(tx,{
     at, amount:input.amount, category:input.category, title:input.category, payee:input.payee, note:input.note,
   },actor);
   const paid=await payment(tx,{
-    kind:"expensePayment",at,amount:input.amount,accountId:input.accountId,method,note:input.note,
+    kind:"expensePayment",at,amount:input.amount,accountId:input.accountId,method,paymentChannel:input.paymentChannel,note:input.note,
     allocations:[{documentId:entry.id,amount:input.amount}],
   },actor);
   return {...entry,after:{expense:entry.after,payment:paid.after}};
