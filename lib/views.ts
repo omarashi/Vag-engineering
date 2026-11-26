@@ -126,9 +126,14 @@ function inventoryWhere(filters:Filters):Prisma.PartWhereInput{
 export async function parts(filters:Filters={},id?:string){
   const items=await db.part.findMany({where:{id,...inventoryWhere(filters)},
     include:id?{movements:{take:100,orderBy:{at:"desc"},include:{document:{select:{number:true,id:true}}}}}:undefined,orderBy:{name:"asc"},skip:id?0:offset(filters),take:id?1:100});
-  return plain(items.map((row)=>({...row,available:row.onHand.toFixed(),low:row.onHand.lte(row.minimum),
+  return plain(items.map((row)=>({...row,low:!row.archived && row.onHand.lte(row.minimum),
     stockCost:extended(row.onHand,row.cost), stockSellingValue:extended(row.onHand,row.price)})));
 }
+export async function partCategories() {
+  const groups = await db.part.groupBy({ by: ["category"], where: { category: { not: "" } }, orderBy: { category: "asc" } });
+  return groups.map(({ category }) => category);
+}
+
 export async function inventoryValue(filters:Filters={}){
   const {q,category,status}=inventoryFilters(filters);
   const query=q ? "%"+q+"%" : null;
@@ -344,7 +349,7 @@ export async function reportRows(kind:string,input:Filters,lang:Language){
     const value=await statement(filters.party);
     return value?.rows.map((row)=>[day(lang,row.at),row.number,label(lang,row.kind),money(lang,row.amount),money(lang,row.balance)]) ?? [];
   }
-  if(kind==="stock") return (await parts(filters)).map((row)=>[row.code,row.name,row.category,String(row.onHand),row.available,
+  if(kind==="stock") return (await parts(filters)).map((row)=>[row.code,row.name,row.category,String(row.onHand),
     money(lang,row.cost),money(lang,row.price),money(lang,row.stockCost),money(lang,row.stockSellingValue)]);
   if(kind==="payments") return (await payments(filters)).map((row)=>[
     row.number,label(lang,row.kind),day(lang,row.at),row.party?.name ?? row.employee?.name ?? "",money(lang,row.amount),label(lang,row.method),

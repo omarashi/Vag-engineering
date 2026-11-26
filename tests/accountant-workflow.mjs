@@ -175,8 +175,16 @@ try {
   assert.equal((await db.payrollExcess.findUniqueOrThrow({where:{id:waived.id}})).remaining,0n);
   assert.doesNotMatch(await page(accountant,"/payroll/"+waiveEmployee),/Payroll needs review/);
 
-  const {id:partId} = await post(owner,"part",{name:"Inventory QA "+suffix,code:"INV-"+suffix,cost:"100",price:"150",category:"Reconciliation"});
-  await post(owner,"stock",{partId,kind:"adjustment",quantity:"10",reason:"Inventory valuation QA"});
+  const newPart = {name:"Inventory QA "+suffix,code:"INV-"+suffix,cost:"100",price:"150",category:"Reconciliation",initialQuantity:"10"};
+  const partKey = randomUUID();
+  const {id:partId} = await post(owner,"part",newPart,partKey);
+  assert.equal((await post(owner,"part",newPart,partKey)).id,partId);
+  const stockedPart = await db.part.findUniqueOrThrow({where:{id:partId},include:{movements:true}});
+  assert.equal(stockedPart.onHand.toFixed(),"10");
+  assert.deepEqual(stockedPart.movements.map(({kind,quantity,totalCost})=>[kind,quantity.toFixed(),totalCost]),[["adjustment","10",100000n]]);
+  assert.equal((await post(owner,"part",{...newPart,id:partId,version:stockedPart.version},undefined,422)).error,"startingQuantityOnCreate");
+  assert.equal((await post(owner,"part",{...newPart,code:"INVALID-"+suffix,initialQuantity:"-1"},undefined,422)).error,"invalidStartingQuantity");
+  assert.equal(await db.part.count({where:{code:"INVALID-"+suffix}}),0);
   const {id:otherPart}=await post(owner,"part",{name:"Other valuation fixture",code:"OTHER-"+suffix,cost:"200",price:"300"});
   await post(owner,"stock",{partId:otherPart,kind:"adjustment",quantity:"1",reason:"Warehouse total fixture"});
   const {id:vehicleId} = await post(owner,"vehicle",{partyId,make:"VW",model:"Golf"});
@@ -186,6 +194,18 @@ try {
     db.jobStock.create({data:{documentId:reserveJobId,partId,reserved:"2"}}),
   ]);
   const inventory = await page(accountant,"/inventory?q="+suffix+"&category=Reconciliation&status=active");
+  assert.match(inventory,/<th scope="col">In stock<\/th>/);
+  assert.doesNotMatch(inventory,/<th scope="col">(?:On hand|Available)<\/th>/);
+  assert.match(await page(accountant,"/inventory/"+partId),/<small>In stock<\/small><b><bdi>10<\/bdi><\/b>/);
+  const stockReport = await page(accountant,"/reports?report=stock&q="+suffix+"&category=Reconciliation");
+  assert.match(stockReport,/<th scope="col">In stock<\/th>/);
+  assert.doesNotMatch(stockReport,/<th scope="col">(?:On hand|Available)<\/th>/);
+  const stockExport = await page(accountant,"/api/export?report=stock&q="+suffix+"&category=Reconciliation");
+  const [stockHeader, stockRow] = stockExport.trimStart().split("\r\n");
+  assert.equal(stockHeader,'"Code","Part","Category","In stock","Cost","Price","Total cost","Total selling value"');
+  const stockPrefix = '"INV-'+suffix+'","Inventory QA '+suffix+'","Reconciliation","10",';
+  assert.ok(stockRow.startsWith(stockPrefix));
+  assert.match(stockRow.slice(stockPrefix.length),/^"EGP\s+100\.00",/);
   assert.match(inventory,/Total selling value/);
   assert.match(inventory,/1,000\.00/);
   assert.match(inventory,/1,500\.00/);

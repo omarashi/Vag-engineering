@@ -42,7 +42,11 @@ const ar: Record<string,string> = {
   "View inventory":"عرض المخزون","Supplier debt":"مستحقات الموردين","Payroll due":"الرواتب المستحقة","Cash & bank":"النقد والبنوك","Customer credits":"ائتمان العملاء","Supplier credits":"ائتمان الموردين",
   "Vehicle":"المركبة","Job number":"رقم العمل","Status":"الحالة","Assigned to":"المسند إليه","No activity yet":"لا يوجد نشاط بعد",
   "No matching records":"لا توجد سجلات مطابقة","No upcoming appointments":"لا توجد مواعيد قادمة","Stock is above minimum levels":"المخزون أعلى من الحد الأدنى",
-  "Part":"قطعة الغيار","Stock":"المخزون","Available":"المتاح","Reserved":"المحجوز","On hand":"الموجود","Minimum":"الحد الأدنى",
+  "Part":"قطعة الغيار","Stock":"المخزون","In stock":"في المخزون","Reserved":"المحجوز","Minimum":"الحد الأدنى",
+  "Starting quantity":"الكمية المبدئية","Add a new category":"إضافة فئة جديدة","New category name":"اسم الفئة الجديدة",
+  "Enter the quantity you already have in the shop.":"اكتب الكمية الموجودة عندك في المحل حاليًا.",
+  "Shows Low stock at this quantity or below.":"يظهر تنبيه «مخزون منخفض» لما الكمية توصل للحد ده أو تقل عنه.",
+  "Back to inventory":"الرجوع للمخزون",
   "Name":"الاسم","Phone":"الهاتف","Alternative contact":"وسيلة اتصال بديلة","Address":"العنوان","Notes":"ملاحظات","Archived":"مؤرشف",
   "Supplier":"المورد","Contact":"الاتصال","Vehicle history":"سجل المركبة","Plate":"رقم اللوحة",
   "Year":"السنة","Mileage":"المسافة المقطوعة",
@@ -141,6 +145,8 @@ const errors: Record<string,[string,string]> = {
   invalidVin:["Enter a valid 17-character VIN.","اكتب رقم الشاسيه من ١٧ حرف ورقم."],
   lowerMileage:["This reading is lower than the previous one. Enter the reason to continue.","قراءة العداد أقل من اللي متسجلة. اكتب السبب في تفاصيل زيادة."],
   archiveStock:["Settle the remaining stock before archiving this part.","سوِّ المخزون المتبقي قبل أرشفة القطعة."],
+  invalidStartingQuantity:["The starting quantity must be zero or more.","الكمية المبدئية لازم تكون صفر أو أكتر."],
+  startingQuantityOnCreate:["Use a stock adjustment to change an existing part’s quantity.","استخدم تسوية المخزون لتغيير كمية قطعة موجودة."],
   passwordLength:["Use a password with at least 12 characters.","استخدم كلمة مرور من ١٢ حرفًا على الأقل."],
   invalidUsername:["Use 3–30 characters for the username. Use English letters, digits, periods, underscores, or hyphens.","استخدم من ٣ إلى ٣٠ حرفًا أو رقمًا في اسم المستخدم. يُسمح بالأحرف الإنجليزية والأرقام والنقطة والشرطة والشرطة السفلية."],
   duplicateUsername:["This username is already in use.","اسم المستخدم هذا مستخدم بالفعل."],
@@ -206,6 +212,7 @@ const errors: Record<string,[string,string]> = {
   photosDisabled:["Workshop photos are turned off in Settings.","صور الورشة مقفولة من الإعدادات."],
 };
 export function translate(lang:Language,key:string) { return lang === "ar" ? egyptian[key] ?? ar[key] ?? key : key; }
+export function partCodeLabel(lang: Language) { return lang === "ar" ? "رقم القطعة الاصلي" : "Code"; }
 export function label(lang:Language,key:string) { const item=values[key]; return item ? item[lang==="ar"?1:0] : translate(lang,key); }
 export function message(lang:Language,key:string) {return (errors[key] ?? errors.serverError)[lang==="ar"?1:0];}
 export function workshopPhotoHint(lang: Language) {

@@ -5,13 +5,13 @@ import { db, plain } from "@/lib/db";
 import { workshopPhotosEnabled, workshopPhotosOn } from "@/lib/workshop-photos";
 import { supplierPriceList, supplierQuoteCode } from "@/lib/supplier-price-list";
 import { carName } from "@/lib/car-name";
-import { cashbook, cashbookDate, documents, inventoryFilters, inventoryValue, parts, parties, payments, reportDocumentKinds,
+import { cashbook, cashbookDate, documents, inventoryFilters, inventoryValue, partCategories, parts, parties, payments, reportDocumentKinds,
   reportCashSummary, reportDocumentSummary, reportFilters, statement, vehicles, type Filters } from "@/lib/views";
 import { ActionForm } from "./backoffice-form";
 import { Actions, Amt, CashAccountSetup, DocRegister, ExportLink, Heading, Info, Pages, PayRegister, PrintLink, Ref, Register, Toolbar } from "./register";
 import { Badge, ButtonLink, Panel } from "./ui";
 import { date, today } from "@/lib/rules";
-import { clock, day, label, translate, type Language } from "@/lib/locale";
+import { clock, day, label, partCodeLabel, translate, type Language } from "@/lib/locale";
 import { closedJobStatuses, openJobStatuses } from "@/lib/workshop";
 import type { Forms } from "@/lib/forms";
 import { PaymentKind, type Role } from "@prisma/client";
@@ -90,17 +90,18 @@ function StockValues({lang,totals}:{lang:Language;totals:Awaited<ReturnType<type
 
 export async function Inventory({lang,forms,query}:ModuleProps){
   const filters=inventoryFilters(query);
-  const [rows,totals]=await Promise.all([parts(filters), inventoryValue(filters)]);
+  const canManageParts=forms.can("part");
+  const [rows,totals,categories]=await Promise.all([parts(filters),inventoryValue(filters),canManageParts?partCategories():[]]);
   return <><Heading lang={lang} title="Inventory">
-    {forms.can("part")&&<ActionForm lang={lang} spec={{...forms.part(),title:"Add product"}} primary auto={query.new==="part"}
+    {canManageParts&&<ActionForm lang={lang} spec={{...forms.part(undefined,categories),title:"Add product"}} primary auto={query.new==="part"}
       source={{href:"/inventory/price-list",label:"Add from price list"}}/>}
     <Actions lang={lang} forms={forms} specs={[forms.stock()]} auto={query.new} primary={false}/>
   </Heading>
     <StockValues lang={lang} totals={totals}/>
     <Toolbar lang={lang} path="/inventory" filters={filters} category status={["active","archived"]}/>
-    <div className="panel"><Register lang={lang} stickyKey head={["Code","Part","Category","On hand","Available","Cost","Price","Total cost","Total selling value"]} rows={rows.map((row)=>[
-      <Ref href={"/inventory/"+row.id}>{row.code}</Ref>,<bdi>{row.name}</bdi>,<bdi>{row.category}</bdi>,String(row.onHand),
-      <span className={row.low?"text-amber-400":""}>{row.available} {row.unit}{row.low?" · "+translate(lang,"Low stock"):""}</span>,<Amt lang={lang} value={row.cost}/>,<Amt lang={lang} value={row.price}/>,
+    <div className="panel"><Register lang={lang} stickyKey head={[partCodeLabel(lang),"Part","Category","In stock","Cost","Price","Total cost","Total selling value"]} rows={rows.map((row)=>[
+      <Ref href={"/inventory/"+row.id}>{row.code}</Ref>,<bdi>{row.name}</bdi>,<bdi>{row.category}</bdi>,
+      <span className={row.low?"text-amber-400":""}>{String(row.onHand)} {row.unit}{row.low?" · "+translate(lang,"Low stock"):""}</span>,<Amt lang={lang} value={row.cost}/>,<Amt lang={lang} value={row.price}/>,
       <Amt lang={lang} value={row.stockCost}/>,<Amt lang={lang} value={row.stockSellingValue}/>,
     ])}/></div><Pages lang={lang} path="/inventory" filters={filters} count={rows.length}/></>;
 }
@@ -323,8 +324,8 @@ export async function Reports({lang,forms,query}:ModuleProps){
     {valuation&&<StockValues lang={lang} totals={valuation}/>}
     <div className="module-grid"><Info lang={lang} title="Financial summary" items={summaryItems.map(([title,value])=>[title,<Amt lang={lang} value={value}/>])}/>
     {cash!==null&&<Info lang={lang} title="Cash activity" items={[[report==="sales"?"Collected":"Paid out",<Amt lang={lang} value={cash}/>]]}/>}
-    <Panel title={tr(reports[report])}>{report==="stock"?<Register lang={lang} stickyKey head={["Code","Part","On hand","Available","Cost","Price","Total cost","Total selling value"]} rows={stock.map((row)=>[
-      <Ref href={"/inventory/"+row.id}>{row.code}</Ref>,row.name,String(row.onHand),row.available,<Amt lang={lang} value={row.cost}/>,
+    <Panel title={tr(reports[report])}>{report==="stock"?<Register lang={lang} stickyKey head={[partCodeLabel(lang),"Part","In stock","Cost","Price","Total cost","Total selling value"]} rows={stock.map((row)=>[
+      <Ref href={"/inventory/"+row.id}>{row.code}</Ref>,row.name,String(row.onHand),<Amt lang={lang} value={row.cost}/>,
       <Amt lang={lang} value={row.price}/>,<Amt lang={lang} value={row.stockCost}/>,<Amt lang={lang} value={row.stockSellingValue}/>,
     ])}/>:<DocRegister lang={lang} docs={rows}/>}</Panel>
     {report==="sales"&&<Panel title={tr("Line items")}><Register lang={lang} head={["Number","Type","Description","Quantity","Total","Cost"]} rows={saleLines.map((line)=>[<Ref href={"/record/"+line.document.id}>{line.document.number}</Ref>,label(lang,line.kind),<bdi>{line.description}</bdi>,String(line.quantity),<Amt lang={lang} value={line.total}/>,<Amt lang={lang} value={line.costTotal}/>])}/></Panel>}

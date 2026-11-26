@@ -1,8 +1,8 @@
 import { notFound, redirect } from "next/navigation";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, ChevronLeft } from "lucide-react";
 import { db, plain } from "@/lib/db";
 import { carName } from "@/lib/car-name";
-import { documentDetail, documents, parts, payments } from "@/lib/views";
+import { documentDetail, documents, partCategories, parts, payments } from "@/lib/views";
 import { ActionForm } from "./backoffice-form";
 import { Actions, Amt, CashAccountSetup, DocRegister, Heading, Info, PayRegister, PrintLink, Ref, Register } from "./register";
 import { Badge, ButtonLink, Panel } from "./ui";
@@ -12,7 +12,7 @@ import { VisitServiceDescription, VisitWorkList } from "./visit-work-list";
 import { isItemizedVisitInvoice, visitWork, workshopIntake } from "@/lib/visit-items";
 import { receiptDetails } from "@/lib/receipt-details";
 import { ReceiptItems } from "./receipt-items";
-import { clock, day, label, translate } from "@/lib/locale";
+import { clock, day, label, partCodeLabel, translate } from "@/lib/locale";
 import { invoiceReceiptForm, receiptAccounts } from "@/lib/visit-forms";
 import { ActionForm as ReceiptForm } from "./action-form";
 import type { ModuleProps } from "./modules";
@@ -182,11 +182,18 @@ export async function VehicleView({lang,forms,id}:Props){
 export async function PartView({lang,forms,id}:Props){
   const [row]=await parts({},id);
   if(!row)notFound();
-  const movements=await db.stockMovement.findMany({where:{partId:id},include:{document:{select:{id:true,number:true}}},orderBy:{at:"desc"},take:100});
-  return <><Heading lang={lang} title={row.name} description={row.code}><Actions lang={lang} forms={forms} specs={[forms.part(row),forms.stock(row)]}/></Heading>
+  const [movements,categories]=await Promise.all([
+    db.stockMovement.findMany({where:{partId:id},include:{document:{select:{id:true,number:true}}},orderBy:{at:"desc"},take:100}),
+    forms.can("part")?partCategories():[],
+  ]);
+  return <><Heading lang={lang} title={row.name} description={row.code}>
+    {row.low&&<Badge lang={lang} value="Low stock"/>}
+    <ButtonLink href="/inventory"><ChevronLeft size={15} className="rtl:rotate-180" aria-hidden="true"/>{translate(lang,"Back to inventory")}</ButtonLink>
+    <Actions lang={lang} forms={forms} specs={[forms.part(row,categories),forms.stock(row)]}/>
+  </Heading>
   <div className="detail-stack"><Info lang={lang} items={[
-    ["Code",row.code],["Category",row.category],["Brand",row.brand],["OEM number",row.oem],["Unit",row.unit],["Location",row.location],
-    ["On hand",String(row.onHand)],["Available",row.available],["Minimum",String(row.minimum)],
+    [partCodeLabel(lang),row.code],["Category",row.category],["Brand",row.brand],["OEM number",row.oem],["Unit",row.unit],["Location",row.location],
+    ["In stock",String(row.onHand)],["Minimum",String(row.minimum)],
     ["Cost",<Amt lang={lang} value={row.cost}/>],["Price",<Amt lang={lang} value={row.price}/>],["Notes",row.note],
   ]}/>
   <Panel title={translate(lang,"Stock movements")}><Register lang={lang} head={["Date","Type","Quantity","Cost","Document","Reason"]} rows={movements.map((item)=>[

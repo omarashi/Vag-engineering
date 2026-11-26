@@ -16,7 +16,7 @@ import type { Change } from "./transaction";
 const handlers: Record<Command,(tx:Tx,data:masters.Input,actor:Actor)=>Promise<Change>> = {
   customer:(tx,data)=>masters.party(tx,"customer",data),
   supplier:(tx,data)=>masters.party(tx,"supplier",data),
-  vehicle:masters.vehicle,visit:saveVisit,employee:masters.employee,part:masters.part,account:masters.account,catalogue:masters.catalogue,
+  vehicle:masters.vehicle,visit:saveVisit,employee:masters.employee,part:inventory.savePart,account:masters.account,catalogue:masters.catalogue,
   settings:masters.settings,user:masters.user,vehicleNote:masters.vehicleNote,
   appointment:workshop.appointment,appointmentStatus:workshop.appointmentStatus,job:workshop.job,
   jobIntake:saveWorkshopJob,jobUpdate:workshop.jobUpdate,jobAssignment:workshop.jobAssignment,

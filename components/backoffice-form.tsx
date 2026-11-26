@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type SetStateAction } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type SetStateAction } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, X } from "lucide-react";
 import { Button } from "./ui";
@@ -12,13 +12,38 @@ import { PurchaseProductPicker } from "./purchase-product-picker";
 import { useDialogDismiss } from "./use-dialog-dismiss";
 
 export type Option={value:string;name:string;related?:string;price?:string;cost?:string;version?:number};
-export type Field={key:string;label:string;type?:"text"|"textarea"|"select"|"multi"|"check"|"date"|"datetime-local"|"month"|"password"|"email";value?:string|boolean|string[];required?:boolean;options?:Option[];wide?:boolean;ltr?:boolean;depends?:string;inputMode?:"decimal"};
+export type Field={key:string;label:string;help?:string;type?:"text"|"textarea"|"select"|"multi"|"check"|"date"|"datetime-local"|"month"|"password"|"email"|"partCategory";value?:string|boolean|string[];required?:boolean;options?:Option[];wide?:boolean;ltr?:boolean;depends?:string;inputMode?:"decimal"};
 export type ActionSpec={action:string;title:string;fields?:Field[];hidden?:Record<string,unknown>;post?:boolean;editor?:"lines"|"returns"|"allocations";options?:Option[];parts?:Option[];services?:Option[];onlyParts?:boolean;purchase?:boolean;purchaseQuotes?:PurchaseQuoteOption[];destination?:string;initialLines?:Row[];initialAllocation?:Record<string,string>;dynamic?:Record<string,Field[]>};
 type Data=Record<string,unknown>;
 type Row=Record<string,string>;
 const makeLine=(onlyParts?:boolean):Row=>({kind:onlyParts?"part":"service",description:"",partId:"",quantity:"1",price:"",discount:"0"});
+
+function PartCategoryField({lang,field,value,onChange}:{lang:Language;field:Field;value:string;onChange:(value:string)=>void}){
+  const options=field.options ?? [];
+  const selected=options.findIndex((option)=>option.value===value);
+  const [adding,setAdding]=useState(Boolean(value && selected<0));
+  const tr=(key:string)=>translate(lang,key);
+  return <div className="field">
+    <label className="field"><span>{tr(field.label)}</span>
+      <select name="categoryChoice" value={adding?"new":selected<0?"":String(selected)} onChange={(event)=>{
+        const choice=event.target.value;
+        setAdding(choice==="new");
+        onChange(choice && choice!=="new" ? options[Number(choice)].value : "");
+      }}>
+        <option value="">{tr("Select…")}</option>
+        {options.map((option,index)=><option key={option.value} value={index}>{option.name}</option>)}
+        <option value="new">{tr("Add a new category")}</option>
+      </select>
+    </label>
+    {adding&&<label className="field"><span>{tr("New category name")}<em aria-hidden="true">*</em></span>
+      <input name="newCategory" dir="auto" required maxLength={100} value={value} onChange={(event)=>onChange(event.target.value)}/>
+    </label>}
+  </div>;
+}
+
 export function ActionForm({lang,spec,primary=false,auto=false,source}:{lang:Language;spec:ActionSpec;primary?:boolean;auto?:boolean;source?:{href:string;label:string}}){
   const dialog=useRef<HTMLDialogElement>(null);
+  const formId=useId();
   const router=useRouter();
   const tr=(name:string)=>translate(lang,name);
   const [state,setState]=useState<Data>(spec.hidden ?? {});
@@ -118,7 +143,9 @@ export function ActionForm({lang,spec,primary=false,auto=false,source}:{lang:Lan
   function control(field:Field){
     const value=state[field.key];
     const options=(field.options ?? []).filter((option)=>!field.depends || !state[field.depends] || option.related===state[field.depends]);
-    const shared={name:field.key,required:field.required,dir:field.ltr?"ltr":undefined};
+    const id=formId+"-"+field.key;
+    const shared={name:field.key,required:field.required,dir:field.ltr?"ltr":undefined,
+      "aria-labelledby":field.help?id+"-label":undefined,"aria-describedby":field.help?id+"-help":undefined};
     if(field.type==="textarea")return <textarea {...shared} rows={3} value={String(value ?? "")} onChange={(event)=>update(field.key,event.target.value)}/>;
     if(field.type==="check")return <input type="checkbox" name={field.key} checked={value===true} onChange={(event)=>update(field.key,event.target.checked)}/>;
     if(field.type==="select")return <select {...shared} value={String(value ?? "")} onChange={(event)=>update(field.key,event.target.value)}><option value="">{tr("Select…")}</option>{options.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select>;
@@ -158,7 +185,13 @@ export function ActionForm({lang,spec,primary=false,auto=false,source}:{lang:Lan
         {heading}
         <div className="dialog-body">
           <div className="contents" inert={working||uncertain}>
-          <div className="form-grid">{fields.map((field)=><label key={field.key} className={"field "+(field.wide?"wide ":"")+(field.type==="check"?"check":"")}><span>{tr(field.label)}{field.required&&<em aria-hidden="true">*</em>}</span>{control(field)}</label>)}</div>
+          <div className="form-grid">{fields.map((field)=>field.type==="partCategory"?
+            <PartCategoryField key={field.key} lang={lang} field={field} value={String(state[field.key] ?? "")} onChange={(value)=>update(field.key,value)}/>:
+            <label key={field.key} className={"field "+(field.wide?"wide ":"")+(field.type==="check"?"check":"")}>
+              <span id={field.help?formId+"-"+field.key+"-label":undefined}>{tr(field.label)}{field.required&&<em aria-hidden="true">*</em>}</span>
+              {field.help&&<small className="text-xs font-normal" id={formId+"-"+field.key+"-help"}>{tr(field.help)}</small>}
+              {control(field)}
+            </label>)}</div>
           {(spec.editor==="lines"||spec.editor==="returns"||editableAllocation)&&<div className="line-editor">
             <div className="line-head"><b>{tr(editableAllocation?"Allocations":"Line items")}</b><Button type="button" onClick={()=>editRows((items)=>[...items,spec.editor==="lines"?makeLine(spec.onlyParts):spec.editor==="returns"?{sourceId:"",quantity:"1",disposition:"none"}:{documentId:"",amount:""}])}><Plus size={14}/>{tr(editableAllocation?"Add allocation":"Add line")}</Button></div>
             {rows.map((row,index)=><div className="line-row" key={index}>

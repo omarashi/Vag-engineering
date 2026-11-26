@@ -1,5 +1,5 @@
 import type { ActionSpec, Field, Option } from "@/components/backoffice-form";
-import { day, label, moneyInput, type Language } from "./locale";
+import { day, label, moneyInput, partCodeLabel, type Language } from "./locale";
 import { demoPartNamesArabic } from "./egyptian";
 import type { selections } from "./views";
 import { moneyAccountKinds, today } from "./rules";
@@ -69,10 +69,14 @@ export function forms(lang:Language,data:Choices,actor:Actor){
       ...(row.id?[memo("reason","Reason or approval"),check("archived","Archived",row.archived===true)]:[]),
     ],row,"/vehicles/$id"),
     vehicleNote:(row:Row)=>edit("vehicleNote","Add history entry",[choose("kind","Type",enumeration(["maintenance","tuning","modification"]),true,"maintenance"),when(),memo("note","Notes","",true)],{...row,id:undefined}),
-    part:(row:Row={})=>edit("part",row.id?"Edit":"Add part",[
-      txt("code","Code",true,str(row,"code"),true),txt("name","Name",true,str(row,"name")),txt("category","Category",false,str(row,"category")),
+    part:(row:Row={},categories:readonly string[]=[])=>edit("part",row.id?"Edit":"Add part",[
+      txt("code",partCodeLabel(lang),true,str(row,"code"),true),txt("name","Name",true,str(row,"name")),
+      {key:"category",label:"Category",type:"partCategory",value:str(row,"category"),options:categories.map((name)=>({value:name,name}))},
       txt("unit","Unit",true,str(row,"unit")||"pc"),txt("oem","OEM number",false,str(row,"oem"),true),txt("brand","Brand",false,str(row,"brand")),
-      txt("location","Location",false,str(row,"location")),txt("minimum","Minimum",false,str(row,"minimum")||"0",true),
+      {...txt("location","Location",false,str(row,"location")),wide:!row.id},
+      ...(row.id?[]:[{...txt("initialQuantity","Starting quantity",false,"0",true),inputMode:"decimal" as const,
+        help:"Enter the quantity you already have in the shop."}]),
+      {...txt("minimum","Minimum",false,str(row,"minimum")||"0",true),inputMode:"decimal",help:"Shows Low stock at this quantity or below."},
       m("cost","Cost",row),m("price","Price",row),memo("note","Notes",str(row,"note")),check("archived","Archived",row.archived===true),
     ],row,"/inventory/$id"),
     employee:(row:Row={})=>edit("employee",row.id?"Edit profile":"Add employee",[

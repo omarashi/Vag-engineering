@@ -2,7 +2,7 @@ import { Prisma, type MovementKind } from "@prisma/client";
 import type { Tx } from "./db";
 import { cents, choice, date, extended, needed, requireRule, text, units } from "./rules";
 import type { Actor, Change } from "./transaction";
-import type { Input } from "./masters";
+import { part, type Input } from "./masters";
 import { workshopIntake } from "./visit-items";
 
 const zero = new Prisma.Decimal(0);
@@ -25,6 +25,18 @@ export async function move(tx: Tx, actor: Actor, params: {
   }});
   return { before:part, after, movement };
 }
+export async function savePart(tx: Tx, input: Input, actor: Actor): Promise<Change> {
+  const quantity = units(text(input.initialQuantity, 20) || "0", true);
+  requireRule(quantity.gte(0), "invalidStartingQuantity");
+  if (quantity.isZero()) return part(tx, input);
+
+  requireRule(!text(input.id, 120), "startingQuantityOnCreate");
+  requireRule(input.archived !== true, "archiveStock");
+  const created = await part(tx, input);
+  const { after } = await move(tx, actor, { partId: created.id, kind: "adjustment", quantity, reason: "Starting quantity" });
+  return { ...created, after };
+}
+
 export async function stock(tx: Tx, input: Input, actor: Actor): Promise<Change> {
   const partId=needed(input.partId);
   const type=choice(input.kind || "adjustment",["opening","adjustment","count"] as const);

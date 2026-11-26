@@ -10,7 +10,7 @@ export function ButtonLink({children,href,primary=false}:{children:ReactNode;hre
 export function Badge({lang,value}:{lang:Language;value:string}){
   const tone=["inProgress","arrived","posted"].includes(value)?"blue":
     ["approved","paid","settled","completed","delivered","received"].includes(value)?"green":
-    ["partial","scheduled","awaitingApproval","inspecting"].includes(value)?"gold":
+    ["partial","scheduled","awaitingApproval","inspecting","Low stock"].includes(value)?"gold":
     ["cancelled","reversed","unpaid","noShow"].includes(value)?"red":"neutral";
   return <span className={"badge "+tone}><i/>{label(lang,value)}</span>;
 }
