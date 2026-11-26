@@ -168,38 +168,173 @@ tbody tr:hover{background:color-mix(in srgb,var(--elevated) 55%,transparent)}
 .calendar-day h3{font-size:12px;color:var(--muted);margin-bottom:7px;font-weight:650}
 .calendar-day a{display:block;background:var(--elevated);border-inline-start:2px solid var(--accent);border-radius:5px;margin-bottom:5px;padding:6px;font-size:11px;overflow-wrap:anywhere}
 .calendar-day a span{display:block;color:var(--quiet);font-size:10px}
-.login-page{position:relative;display:grid;grid-template-columns:minmax(0,1fr) minmax(400px,.8fr);min-height:100dvh}
-.login-photo{position:relative;overflow:hidden;background:#160c10}
-.login-photo img{object-fit:cover;object-position:50% 56%}
-.login-photo::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,#0d080b85,transparent 27%);pointer-events:none}
-.login-column{display:grid;place-items:center;padding:72px 28px;background:var(--bg)}
-.login-toolbar{display:contents}
-.login-brand{position:absolute;inset-inline-start:32px;inset-block-start:25px;color:#fff}
-.login-brand .mark small{color:#dedce2}
-.login-preferences{display:flex;gap:5px;position:absolute;inset-inline-end:23px;inset-block-start:20px}
-.login-form{width:min(100%,340px)}
-.login-icon{width:49px;height:49px;border-radius:12px;display:grid;place-items:center;background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent);margin-bottom:15px}
-.login-form h1{font-size:32px;font-weight:750;letter-spacing:-.045em}
-[lang=ar-EG] .login-form h1{letter-spacing:0}
-.login-form p{margin:5px 0 20px;color:var(--muted);font-size:13px}
-.login-form form{display:grid;gap:13px}
-.login-form label,.field{display:flex;min-width:0;flex-direction:column;gap:5px;font-size:12px;font-weight:650;color:var(--muted)}
-.login-input{display:flex;align-items:center;gap:9px;border:1px solid var(--edge);border-radius:7px;padding-inline:11px;background:var(--panel);color:var(--quiet)}
-.login-input input{width:100%;border:0;background:transparent;outline:none;min-height:40px;padding-inline:0}
-.login-input:focus-within{border-color:var(--blue)}
-.login-form .button{width:100%;min-height:42px}
-.demo-login{margin-top:10px}
-@media(max-width:700px){
-  .login-page{display:flex;flex-direction:column}
-  .login-photo{height:clamp(180px,56vw,300px);flex:none}
-  .login-photo img{object-position:50% 58%}
-  .login-photo::after{display:none}
-  .login-column{flex:1;display:flex;flex-direction:column;align-items:center;gap:20px;padding:16px 20px 26px}
-  .login-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;width:min(100%,340px)}
-  .login-brand,.login-preferences{position:static}
-  .login-brand{color:var(--text)}
-  .login-brand .mark small{color:var(--muted)}
+/* ── VAG Garage Login Page ── */
+.login-page{
+  position:relative;min-height:100dvh;width:100%;overflow-x:hidden;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:24px 16px;
+  background:linear-gradient(180deg,#181b1e 0%,#15181b 52%,#1c2125 100%);
 }
+
+/* Full-scene backdrop that fills the viewport exactly */
+.login-backdrop{
+  position:fixed;inset:0;z-index:0;pointer-events:none;
+  display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(180deg,#1e2022 0%,#181a1d 55%,#24282c 100%);
+}
+.login-picture{display:flex;width:100%;height:100%;align-items:center;justify-content:center}
+.login-scene-img{
+  width:100%;height:100%;object-fit:cover;object-position:center;
+  display:block;user-select:none;
+  -webkit-mask-image:linear-gradient(180deg,transparent 0%,#000 4%,#000 95%,transparent 100%);
+  mask-image:linear-gradient(180deg,transparent 0%,#000 4%,#000 95%,transparent 100%);
+}
+
+/* Coded Sign-In Card */
+.login-card{
+  position:relative;z-index:2;
+  width:min(100%,355px);
+  padding:28px 26px 22px;
+  border-radius:14px;
+  background:rgba(16,18,22,.88);
+  backdrop-filter:blur(14px) saturate(1.2);
+  border:1px solid rgba(255,255,255,.1);
+  box-shadow:0 24px 64px rgba(0,0,0,.7),inset 0 1px 0 rgba(220,45,50,.45);
+  color:#f5f5f7;
+}
+.login-card-head{text-align:center;margin-bottom:20px}
+.login-card-head h1{
+  margin:0;font-size:26px;font-weight:800;letter-spacing:.04em;color:#fff;line-height:1.1;
+}
+.login-card-head p{
+  margin:5px 0 0;font-size:11px;font-weight:500;letter-spacing:.15em;color:#b2b6bf;
+}
+
+.login-card-form{display:grid;gap:12px}
+
+.login-field{
+  display:flex;align-items:center;gap:10px;
+  height:44px;padding:0 13px;
+  border-radius:7px;
+  background:rgba(255,255,255,.03);
+  border:1px solid rgba(255,255,255,.14);
+  color:#7e828c;
+  transition:border-color .15s,box-shadow .15s,background .15s;
+}
+.login-field svg{flex:none}
+.login-field:focus-within{
+  border-color:rgba(220,38,44,.75);
+  background:rgba(255,255,255,.05);
+  box-shadow:0 0 0 2px rgba(220,38,44,.18);
+  color:#cfd2d9;
+}
+.login-field input{
+  width:100%;min-width:0;min-height:0;height:100%;padding:0;border:0;outline:none;
+  background:transparent;color:#f3f4f6;font-size:13.5px;
+}
+.login-field input::placeholder{color:#7c808b}
+.login-field input:-webkit-autofill{
+  -webkit-box-shadow:0 0 0 100px #15181c inset;
+  -webkit-text-fill-color:#f3f4f6;
+}
+
+.login-options{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  margin-top:2px;font-size:12px;color:#b2b6bf;
+}
+.login-remember{
+  position:relative;display:inline-flex;align-items:center;gap:8px;cursor:pointer;user-select:none;
+}
+.login-remember input{
+  position:absolute;inset:0;width:100%;height:100%;opacity:0;margin:0;cursor:pointer;
+}
+.login-checkbox{
+  width:15px;height:15px;flex:none;border-radius:3.5px;
+  border:1px solid rgba(255,255,255,.24);background:rgba(255,255,255,.02);
+  display:grid;place-items:center;transition:background .12s,border-color .12s,box-shadow .12s;
+}
+.login-remember input:focus-visible + .login-checkbox{
+  outline:2px solid #76bcff;outline-offset:2px;
+}
+.login-remember input:checked + .login-checkbox{
+  background:#d81b23;border-color:#ef333b;box-shadow:0 0 8px rgba(216,27,35,.55);
+}
+.login-remember input:checked + .login-checkbox::after{
+  content:"";width:4px;height:8px;border:solid #fff;border-width:0 2px 2px 0;
+  transform:rotate(45deg) translate(-1px,-1px);
+}
+.login-forgot{
+  background:transparent;border:0;padding:0;color:#b2b6bf;font-size:12px;cursor:pointer;
+  transition:color .14s;
+}
+.login-forgot:hover{color:#fff}
+
+.login-notice{
+  margin:0;padding:7px 10px;border-radius:6px;font-size:12px;line-height:1.35;text-align:center;
+}
+.login-notice.error{background:rgba(165,24,30,.32);color:#ff9497;border:1px solid rgba(255,100,104,.35)}
+.login-notice.info{background:rgba(255,255,255,.07);color:#dcdfe6;border:1px solid rgba(255,255,255,.14)}
+
+.login-submit{
+  width:100%;height:44px;margin-top:4px;border:0;border-radius:999px;
+  font-size:13px;font-weight:750;letter-spacing:.09em;color:#fff;cursor:pointer;
+  background:linear-gradient(180deg,#ef242b 0%,#c41219 100%);
+  box-shadow:0 0 24px rgba(235,28,36,.52),0 6px 16px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.22);
+  transition:box-shadow .18s,transform .1s,filter .15s;
+}
+.login-submit:hover{
+  filter:brightness(1.06);
+  box-shadow:0 0 32px rgba(239,36,43,.72),0 8px 20px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.28);
+}
+.login-submit:active{transform:scale(.988)}
+.login-submit:disabled{opacity:.68;cursor:wait;transform:none}
+
+/* VAG Engineering logo at the top of the card */
+.login-logo{display:flex;justify-content:center;margin-bottom:18px}
+.login-logo .mark{gap:12px}
+.login-logo .mark img{width:42px;height:42px;border-radius:9px}
+.login-logo .mark strong{font-size:16px;letter-spacing:.05em;color:#fff}
+.login-logo .mark small{display:none}
+
+/* Demo workspace button (only rendered when VAG_DEMO=true) */
+.login-demo-btn{
+  position:fixed;bottom:14px;right:14px;z-index:5;
+  padding:8px 14px;border-radius:999px;
+  background:rgba(16,18,22,.88);color:#e5e5ea;
+  border:1px solid rgba(255,255,255,.18);
+  font-size:12px;font-weight:650;cursor:pointer;
+  backdrop-filter:blur(8px);
+}
+.login-demo-btn:hover{background:#c41219;border-color:#ef242b;color:#fff}
+
+/* ── Phone / portrait screens: full-bleed 768x1376 portrait scene behind the card ── */
+@media(max-width:700px),(max-aspect-ratio:1/1){
+  .login-page{
+    justify-content:center;
+    padding:16px;
+    background:#131619;
+  }
+  .login-backdrop{
+    position:fixed;inset:0;
+    background:#131619;
+  }
+  .login-scene-img{
+    width:100%;height:100%;object-fit:cover;object-position:center;
+    -webkit-mask-image:none;mask-image:none;
+  }
+  .login-card{
+    margin-top:0;
+    width:min(100%,340px);
+    padding:22px 18px 18px;
+    background:rgba(16,18,22,.82);
+  }
+  .login-card-head{margin-bottom:16px}
+  .login-field input{font-size:16px}
+  .login-demo-btn{position:static;margin-top:12px}
+}
+
+/* Legacy support for .field used elsewhere */
+.field{display:flex;min-width:0;flex-direction:column;gap:5px;font-size:12px;font-weight:650;color:var(--muted)}
 input,select,textarea{color:var(--text);background:var(--bg);border:1px solid var(--edge);border-radius:6px;min-height:35px;padding:6px 8px;min-width:0}
 input::placeholder,textarea::placeholder{color:var(--quiet)}
 input[type="checkbox"]{min-height:16px;width:16px;accent-color:var(--primary)}

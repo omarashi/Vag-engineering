@@ -333,5 +333,12 @@ export const egyptian: Record<string, string> = {
   "Demonstration data": "بيانات للتجربة",
   "Page not found": "الصفحة دي مش موجودة",
   "Website unavailable": "البرنامج مش متاح دلوقتي",
+  "SIGN IN": "تسجيل الدخول",
+  "WELCOME BACK": "أهلاً بيك تاني",
+  "Email Address": "عنوان الإيميل",
+  "Remember Me": "فكّرني",
+  "Forgot Password?": "نسيت الباسورد؟",
+  "VAG Group brands": "ماركات مجموعة VAG",
+  "Ask your workshop owner to reset your password.": "اطلب من صاحب الورشة يغيّر لك الباسورد.",
 };
 
