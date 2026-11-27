@@ -78,6 +78,7 @@ try {
     moneyRow(page, "Amount paid", "4,000.00");
   }
   assert.doesNotMatch(await html(customerReceipt), /<dt>(?:Total|Paid)<\/dt>/);
+  assert.match(await html(customerReceipt), /Payment type<\/dt><dd>On credit<\/dd>/);
   const printed = await html(printable);
   assert.ok(printed.indexOf(name) < printed.indexOf("General labor"));
   assert.ok(printed.indexOf("Electrical labor") < printed.indexOf("Invoice total"));
@@ -109,7 +110,9 @@ try {
   moneyRow(finalPrint, "Balance before payment", "2,400.00");
   moneyRow(finalPrint, "Paid this time", "2,400.00");
   moneyRow(finalPrint, "Remaining balance", "0.00");
-  assert.match(finalPrint, /Payment type<\/dt><dd>Paid<\/dd>/);
+  assert.match(finalPrint, /Payment type<\/dt><dd>Fully paid<\/dd>/);
+  const arabicFinal = await html("/print/payment/" + finalReceipt + "?lang=ar");
+  assert.match(arabicFinal, /نوع الدفع<\/dt><dd>مدفوع كاملا<\/dd>/);
   const importCredit = await lineCredit(item, "500");
   const refund = await save("payment", { kind: "refund", accountId: account.id, at, amount: "500", note: "Billing QA refund",
     allocations: [{ documentId: importCredit, amount: "500" }] });

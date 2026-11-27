@@ -18,6 +18,7 @@ export function ReceiptItems({ lang, details, print }: { lang: Language; details
       const number = <bdi>{document.number}</bdi>;
       const invoice = document.kind === "invoice";
       const balance = after ?? settlement?.balance;
+      const paymentType = invoice && balance !== undefined ? invoicePaymentType(balance, received) : null;
       const followUp = before !== null && (!invoice || before < document.total || details.bills.length > 1);
       return <section className="receipt-bill" key={document.id}>
         <header>
@@ -28,7 +29,7 @@ export function ReceiptItems({ lang, details, print }: { lang: Language; details
         </header>
         <div className={print ? undefined : "table-scroll"}><BillItems lang={lang} bill={document}/></div>
         <dl className="receipt-totals">
-          {invoice && balance !== undefined && <div><dt>{t("Payment type")}</dt><dd>{t(invoicePaymentType(balance, received))}</dd></div>}
+          {paymentType && <div><dt>{t("Payment type")}</dt><dd>{t(paymentType === "Paid" ? "Fully paid" : paymentType)}</dd></div>}
           {followUp ? <div><dt>{t("Balance before payment")}</dt><dd>{amt(before)}</dd></div> : <>
             {discount > 0n && <div><dt>{t("Discount")}</dt><dd>{amt(discount)}</dd></div>}
             <div><dt>{t(invoice ? "Invoice total" : "Total")}</dt><dd>{amt(document.total)}</dd></div>

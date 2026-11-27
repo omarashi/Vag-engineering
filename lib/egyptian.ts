@@ -138,6 +138,7 @@ export const egyptian: Record<string, string> = {
   "Print receipt": "اطبع الإيصال",
   "Amount paid (EGP)": "المبلغ المدفوع (جنيه)",
   "Paid": "المدفوع",
+  "Fully paid": "مدفوع كاملا",
   "Customer balance": "حساب العميل",
   "Debts": "الديون",
   "Customer debts": "الفلوس اللي على العملاء",
