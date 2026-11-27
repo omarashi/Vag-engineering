@@ -87,7 +87,8 @@ try {
   const { id: partyId } = await action(technician, "customer", { name: sample });
   const { id: vehicleId } = await action(technician, "vehicle", { partyId, make: "Audi", model: "A3" });
   const { id: jobId } = await action(technician, "jobIntake", { partyId, vehicleId, jobMode: "stay", receivedBy: sample,
-    at: day, services: ["maintenance"], serviceDetails: { maintenance: "Replaced filter" }, parts: [{ partId, quantity: "1" }] });
+    at: day, services: ["maintenance", "generalLabor"], billingChecklist: true,
+    serviceDetails: { maintenance: "Replaced filter" }, parts: [{ partId, quantity: "1" }] });
   const jobPath = "/jobs/" + jobId;
   assert.doesNotMatch(await page(accountant, "/jobs/billing?party=" + partyId), new RegExp(jobPath));
   await action(technician, "jobUpdate", { id: jobId, version: 0, status: "inProgress", work: "Checked oil level" });
@@ -103,7 +104,8 @@ try {
   assert.match(await page(accountant, jobPath), /Create invoice and take payment/);
 
   const drawer = await db.moneyAccount.findFirstOrThrow({ where: { kind: "cash", archived: false } });
-  const payment = { visitId: jobId, visitVersion: 2, at: day, accountId: drawer.id, method: "cash", servicePrices: { maintenance: "100" }, amount: "277.32" };
+  const payment = { visitId: jobId, visitVersion: 2, at: day, accountId: drawer.id, method: "cash",
+    workshopCharges: { generalLabor: "100" }, amount: "277.32" };
   await action(technician, "visitReceipt", payment, 403);
   await action(technician, "payment", payment, 403);
   const { id: receiptId } = await action(accountant, "visitReceipt", payment);

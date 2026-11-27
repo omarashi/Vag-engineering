@@ -4,14 +4,15 @@ import { db, plain } from "@/lib/db";
 import { carName } from "@/lib/car-name";
 import { documentDetail, documents, partCategories, parts, payments } from "@/lib/views";
 import { ActionForm } from "./backoffice-form";
-import { Actions, Amt, CashAccountSetup, DocRegister, Heading, Info, PayRegister, PrintLink, Ref, Register } from "./register";
+import { Actions, Amt, CashAccountSetup, documentBadgeValue, DocRegister, Heading, Info, PayRegister, PrintLink, Ref, Register } from "./register";
 import { Badge, ButtonLink, Panel } from "./ui";
 import { Attachments } from "./attachments";
 import { WorkshopMedia } from "./workshop-media";
 import { VisitServiceDescription, VisitWorkList } from "./visit-work-list";
-import { isItemizedVisitInvoice, visitWork, workshopIntake } from "@/lib/visit-items";
+import { describedInvoiceWork, isItemizedVisitInvoice, visitWork, workshopIntake } from "@/lib/visit-items";
 import { receiptDetails } from "@/lib/receipt-details";
 import { ReceiptItems } from "./receipt-items";
+import { invoiceLineType } from "./bill-items";
 import { clock, day, label, partCodeLabel, translate } from "@/lib/locale";
 import { today } from "@/lib/rules";
 import { invoiceReceiptForm, receiptAccounts } from "@/lib/visit-forms";
@@ -21,6 +22,7 @@ import { isWorkshopRecord } from "@/lib/permissions";
 import { payrollLocked, payrollPayday } from "@/lib/payroll-rules";
 import { chargeLabels, isChargeType } from "@/lib/workshop-charges";
 import { invoicePaymentType } from "@/lib/invoice-settlement";
+import { startingQuantity } from "@/lib/stock";
 
 type Props=ModuleProps&{id:string};
 export async function RecordView({lang,forms,id}:Props){
@@ -36,6 +38,7 @@ export async function RecordView({lang,forms,id}:Props){
   const work=row.kind==="job";
   const sourcePath=row.source?.kind==="visit"||row.source?.kind==="job"?"/jobs/":"/record/";
   const billedWork=row.kind==="invoice"?visitWork(row):[];
+  const describedWork=describedInvoiceWork(row.metadata,billedWork);
   const itemizedVisit=row.kind==="invoice"&&isItemizedVisitInvoice(row.metadata);
   const payable=["invoice","purchase","customerOpening","supplierOpening","credit","supplierCredit","expense","payroll","employeeOpening"].includes(row.kind);
   const creditable=["invoice","purchase","customerOpening","supplierOpening"].includes(row.kind);
@@ -54,7 +57,7 @@ export async function RecordView({lang,forms,id}:Props){
   const partiallyPaid=due<BigInt(row.total);
   const payStatus=due===0n ? creditsIssued>0n?"settled":"paid" : partiallyPaid?"partial":"unpaid";
   return <><Heading lang={lang} title={row.number} description={label(lang,row.kind)+(row.title?" · "+row.title:"")}>
-    <Badge lang={lang} value={row.status}/>{finance&&<PrintLink lang={lang} type="record" id={id}/>}
+    <Badge lang={lang} value={documentBadgeValue(row)}/>{finance&&<PrintLink lang={lang} type="record" id={id}/>}
     {row.kind==="invoice"&&row.partyId&&posted&&forms.can("customerRefund")&&BigInt(row.settlement?.adjusted ?? 0)>0n&&
       <ButtonLink href={"/refunds?party="+row.partyId+"&invoice="+id}>{tr("Refund / Return")}</ButtonLink>}
     {row.refundBatchId&&<ButtonLink href={"/refunds/"+row.refundBatchId}>{tr("Refund receipt")}</ButtonLink>}
@@ -104,15 +107,19 @@ export async function RecordView({lang,forms,id}:Props){
       ["Follow-up date",String(meta.followUp ?? "")],["Follow-up mileage",String(meta.followMileage ?? "")],
     ]}/>}
     {!itemizedVisit&&billedWork.length>0&&<Panel title={tr("Work done")}><VisitWorkList lang={lang} work={billedWork}/></Panel>}
-    {!!row.lines.length&&<Panel title={tr("Line items")}><Register lang={lang} head={[
+    {(describedWork.length>0||row.lines.length>0)&&<Panel title={tr("Line items")}><Register lang={lang} head={[
       "Type","Description","Quantity",...(finance?[itemizedVisit?"Unit price":"Price","Discount","Total","Cost"]:[]),
-    ]} rows={row.lines.map((line)=>{
-      const item=itemizedVisit&&line.kind==="service"&&!line.purpose?billedWork[line.position]:undefined;
-      const description=isChargeType(line.purpose)?tr(chargeLabels[line.purpose]):line.description;
-      return [line.purpose==="importedItem"?tr("Import"):label(lang,line.kind),item?<VisitServiceDescription lang={lang} work={item}/>:
-        <><bdi>{description}</bdi>{finance&&line.supplierName&&<small><bdi>{line.supplierName}</bdi></small>}</>,String(line.quantity)==="0"?"—":String(line.quantity),
-        ...(finance?[<Amt lang={lang} value={line.price}/>,<Amt lang={lang} value={line.discount}/>,<Amt lang={lang} value={line.total}/>,<Amt lang={lang} value={line.costTotal}/>]:[])];
-    })}/></Panel>}
+    ]} rows={[
+      ...describedWork.map((item)=>[label(lang,"service"),<VisitServiceDescription lang={lang} work={item}/>,"",...(finance?["","","",""]:[])]),
+      ...row.lines.map((line)=>{
+        const item=itemizedVisit&&line.kind==="service"&&!line.purpose?billedWork[line.position]:undefined;
+        const description=isChargeType(line.purpose)?tr(chargeLabels[line.purpose]):line.description;
+        const type=row.kind==="invoice"?invoiceLineType(lang,line):line.purpose==="importedItem"?tr("Import"):label(lang,line.kind);
+        return [type,item?<VisitServiceDescription lang={lang} work={item}/>:
+          <><bdi>{description}</bdi>{finance&&line.supplierName&&<small><bdi>{line.supplierName}</bdi></small>}</>,String(line.quantity)==="0"?"—":String(line.quantity),
+          ...(finance?[<Amt lang={lang} value={line.price}/>,<Amt lang={lang} value={line.discount}/>,<Amt lang={lang} value={line.total}/>,<Amt lang={lang} value={line.costTotal}/>]:[])];
+      }),
+    ]}/></Panel>}
     {!!links.length&&<Panel title={tr("Related documents")}><Register lang={lang} head={["Number","Type","Status"]} rows={links}/></Panel>}
     {!!row.jobStock.length&&<Panel title={tr("Stock")}><Register lang={lang} head={["Part","Quantity",...(finance?["Cost"]:[])]} rows={row.jobStock.map((line)=>[
       finance?<Ref href={"/inventory/"+line.partId}>{line.part.name}</Ref>:<bdi>{line.part.name}</bdi>,
@@ -200,14 +207,16 @@ export async function VehicleView({lang,forms,id}:Props){
 export async function PartView({lang,forms,id}:Props){
   const [row]=await parts({},id);
   if(!row)notFound();
-  const [movements,categories]=await Promise.all([
+  const mayEdit=forms.can("part");
+  const [movements,categories,opening]=await Promise.all([
     db.stockMovement.findMany({where:{partId:id},include:{document:{select:{id:true,number:true}}},orderBy:{at:"desc"},take:100}),
-    forms.can("part")?partCategories():[],
+    mayEdit?partCategories():[],
+    mayEdit?startingQuantity(db,id):null,
   ]);
   return <><Heading lang={lang} title={row.name} description={row.code}>
     {row.low&&<Badge lang={lang} value="Low stock"/>}
     <ButtonLink href="/inventory"><ChevronLeft size={15} className="rtl:rotate-180" aria-hidden="true"/>{translate(lang,"Back to inventory")}</ButtonLink>
-    <Actions lang={lang} forms={forms} specs={[forms.part(row,categories),forms.stock(row)]}/>
+    <Actions lang={lang} forms={forms} specs={[mayEdit&&forms.part({...row,initialQuantity:opening?.toFixed()},categories),forms.stock(row)]}/>
   </Heading>
   <div className="detail-stack"><Info lang={lang} items={[
     [partCodeLabel(lang),row.code],["Category",row.category],["Brand",row.brand],["OEM number",row.oem],["Unit",row.unit],["Location",row.location],
@@ -216,7 +225,8 @@ export async function PartView({lang,forms,id}:Props){
   ]}/>
   <Panel title={translate(lang,"Stock movements")}><Register lang={lang} head={["Date","Type","Quantity","Cost","Document","Reason"]} rows={movements.map((item)=>[
     day(lang,item.at),label(lang,item.kind),String(item.quantity),<Amt lang={lang} value={item.totalCost}/>,
-    item.document?<Ref href={"/record/"+item.document.id}>{item.document.number}</Ref>:null,<bdi>{item.reason}</bdi>,
+    item.document?<Ref href={"/record/"+item.document.id}>{item.document.number}</Ref>:null,
+    <bdi>{item.kind==="opening"&&item.reason==="Starting quantity correction"?translate(lang,item.reason):item.reason}</bdi>,
   ])}/></Panel></div></>;
 }
 

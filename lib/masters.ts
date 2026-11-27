@@ -71,7 +71,8 @@ export async function part(tx: Tx, input: Input): Promise<Change> {
   const id = text(input.id,120);
   const before = id ? await tx.part.findUnique({where:{id}}) : null;
   checkVersion(before,input);
-  const data = { name:needed(input.name),code:needed(input.code,50),category:text(input.category,100),oem:text(input.oem,100),
+  const data = { name:needed(input.name),code:needed(input.code,50),category:text(input.category,100),
+    oem:input.oem===undefined ? before?.oem ?? "" : text(input.oem,100),
     brand:text(input.brand,100),unit:needed(input.unit || "pc",30),location:text(input.location,100),note:text(input.note),
     minimum:units(input.minimum || "0",true),price:cents(input.price),cost:cents(input.cost),archived:input.archived===true };
   requireRule(data.minimum.gte(0));

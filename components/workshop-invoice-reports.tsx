@@ -88,24 +88,23 @@ export async function ElectricalWork({ lang, forms, query }: ModuleProps) {
   const now = today();
   const sunday = addDays(now, -new Date(now + "T12:00:00Z").getUTCDay());
   const period = (from: string) => path + "?" + new URLSearchParams({ q: query.q || "", party: query.party || "", vehicle: query.vehicle || "", from, to: now });
-  return <><Heading lang={lang} title="Electrical work">
+  return <><Heading lang={lang} title="Electrical labor">
     <ButtonLink href={period(now)}>{t("Today")}</ButtonLink><ButtonLink href={period(sunday)}>{t("This week")}</ButtonLink>
   </Heading>
     <Toolbar lang={lang} path={path} filters={query} dateRange partyLabel="Customer" party={forms.adapters.customer} vehicle={forms.adapters.cars}/>
     <div className="detail-stack">
-      <Info lang={lang} title="Electrical totals" items={[["Electrical work", <Amt lang={lang} value={report.work}/>],
-        ["Electrical labor", <Amt lang={lang} value={report.labor}/>], ["Combined electrical charges", <Amt lang={lang} value={report.total}/>]]}/>
+      <Info lang={lang} title="Electrical totals" items={[["Electrical labor", <Amt lang={lang} value={report.total}/>]]}/>
       <UnassignedCredits lang={lang} amount={report.unassignedCredits}/>
-      <Panel title={t("Invoices")}><Register lang={lang} head={["Invoice", "Date", "Customer", "Vehicle", "Electrical work", "Electrical labor", "Work order", "Payment status"]} rows={rows.map(({ invoice, work, labor, settlement }) => [
+      <Panel title={t("Invoices")}><Register lang={lang} head={["Invoice", "Date", "Customer", "Vehicle", "Electrical labor", "Work order", "Payment status"]} rows={rows.map(({ invoice, labor, settlement }) => [
         <Ref href={"/record/" + invoice.id}>{invoice.number}</Ref>, day(lang, invoice.at),
         invoice.party && <Ref href={"/customers/" + invoice.party.id}>{invoice.party.name}</Ref>, vehicleLink(invoice.vehicle),
-        <Amt lang={lang} value={work}/>, <Amt lang={lang} value={labor}/>, invoice.source && <Ref href={"/jobs/" + invoice.source.id}>{invoice.source.number}</Ref>,
+        <Amt lang={lang} value={labor}/>, invoice.source && <Ref href={"/jobs/" + invoice.source.id}>{invoice.source.number}</Ref>,
         settlement ? t(invoicePaymentType(settlement.balance, settlement.paid)) : label(lang, invoice.status),
       ])}/></Panel>
       <Pages lang={lang} path={path} filters={query} count={rows.length}/>
-      {report.pending.length > 0 && <Panel title={t("Work orders awaiting invoice")}><Register lang={lang} head={["Work order", "Date", "Customer", "Vehicle", "Electrical work", "Electrical labor"]} rows={report.pending.slice(0, 100).map(({ job, work, labor }) => [
+      {report.pending.length > 0 && <Panel title={t("Work orders awaiting invoice")}><Register lang={lang} head={["Work order", "Date", "Customer", "Vehicle", "Electrical labor"]} rows={report.pending.slice(0, 100).map(({ job, labor }) => [
         <Ref href={"/jobs/" + job.id}>{job.number}</Ref>, day(lang, job.at), job.party && <Ref href={"/customers/" + job.party.id}>{job.party.name}</Ref>,
-        vehicleLink(job.vehicle), <Amt lang={lang} value={work}/>, <Amt lang={lang} value={labor}/>,
+        vehicleLink(job.vehicle), <Amt lang={lang} value={labor}/>,
       ])}/></Panel>}
     </div></>;
 }

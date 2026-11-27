@@ -17,6 +17,7 @@ import { VisitInvoiceFields, type VisitInvoicePricing, type VisitWorkshopPricing
 import { WorkshopPhotoPicker } from "./workshop-photo-picker";
 import { useDialogDismiss } from "./use-dialog-dismiss";
 import { chargeTypes, type ImportInput } from "@/lib/workshop-charges";
+import { requiresServicePrice } from "@/lib/services";
 
 export type Option = { value: string; name: string; related?: string; description?: string; checkboxOnly?: boolean };
 export type Field = {
@@ -121,6 +122,7 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
       }
     }
     const invalidPrice = spec.invoicePricing?.work.find(({ service }) => {
+      if (!requiresServicePrice(service)) return false;
       const price = parseMoney(prices[service]);
       return price === null || price < 0n;
     });

@@ -5,6 +5,7 @@ const names = {
   maintenance: "Routine maintenance",
   diagnostics: "Diagnostics",
   tuning: "Software tuning",
+  dyno: "Dyno",
   inspection: "Inspection",
   repair: "Repair",
   other: "Other work",
@@ -12,6 +13,11 @@ const names = {
 export type ServiceType = keyof typeof names;
 export const serviceTypes = Object.keys(names) as ServiceType[];
 export const selectableServices = serviceTypes.filter((service) => service !== "repair");
+const descriptiveServices: readonly ServiceType[] = ["installation", "diagnostics", "inspection", "maintenance"];
+
+export function requiresServicePrice(service: ServiceType) {
+  return !descriptiveServices.includes(service);
+}
 
 export function isService(value: unknown): value is ServiceType {
   return typeof value === "string" && Object.hasOwn(names, value);

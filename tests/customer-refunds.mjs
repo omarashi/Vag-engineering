@@ -17,8 +17,8 @@ async function save(action,data,role,key){const result=await post(action,data,ro
 async function page(path,role="owner",status=200){const response=await fetch(base+path,{headers:{Cookie:sessions[role]}});assert.equal(response.status,status,path);return response.text();}
 async function customer(name){const partyId=await save("customer",{name:name+" "+randomUUID().slice(0,5)});return {partyId,vehicleId:await save("vehicle",{partyId,make:"Audi",model:"A3"})};}
 async function invoice(customer,price,extra={},invoiceDate=at){
-  const visitId=await save("visit",{...customer,at,services:["inspection"],...extra});
-  const id=await save("visitInvoice",{visitId,at:invoiceDate,servicePrices:{inspection:price}});
+  const visitId=await save("visit",{...customer,at,services:["inspection","other"],...extra});
+  const id=await save("visitInvoice",{visitId,at:invoiceDate,servicePrices:{other:price}});
   return db.document.findUniqueOrThrow({where:{id},include:{lines:{orderBy:{position:"asc"}}}});
 }
 const receive=(invoice,amount)=>save("payment",{kind:"receipt",at,invoiceId:invoice.id,accountId:account.id,amount});
@@ -155,7 +155,7 @@ try{
   const specialist=await save("customerRefund",request(workshop,[{invoiceId:categorized.id,lines:[{sourceId:item.id,amount:"200",disposition:"none"},
     {sourceId:labor.id,amount:"300",disposition:"none"}]}],50000,50000));
   assert.equal(await db.stockMovement.count({where:{documentId:(await notes(specialist))[0].id}}),0);
-  assert.match(await page("/electrical-work?vehicle="+workshop.vehicleId),/Combined electrical charges<\/small><b><bdi>EGP\s*700\.00/);
+  assert.match(await page("/electrical-work?vehicle="+workshop.vehicleId),/Electrical labor<\/small><b><bdi>EGP\s*700\.00/);
   assert.match(await page("/imports?q=Imported+return+module"),/Net sales<\/small><b><bdi>EGP\s*700\.00/);
   assert.equal((await post("customerRefund",request(workshop,[{invoiceId:categorized.id,lines:[{sourceId:labor.id,amount:"700.01",disposition:"none"}]}],70001,70001))).status,422);
   assert.match(await page("/print/refund/"+specialist+"?lang=ar"),/مصنعيات كهرباء/);

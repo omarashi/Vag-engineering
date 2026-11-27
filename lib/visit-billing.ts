@@ -8,10 +8,10 @@ import type { Actor, Change } from "./transaction";
 import type { Input } from "./masters";
 import { visitParts, visitWork, workshopIntake } from "./visit-items";
 import { divideHalfUp, parseMoney } from "./decimal-input";
-import { serviceName } from "./services";
+import { requiresServicePrice, serviceName } from "./services";
 import { recordedDeliveryDate } from "./visits";
 import { billingMetadata, hasBillingInput, workshopBillingData, workshopBillingLines } from "./workshop-billing-lines";
-import { billingSelection, chargeTypes, savedBillingSelection, workshopCharges, workshopMetadata } from "./workshop-charges";
+import { billingSelection, chargeTypes, savedBillingSelection, workshopChargeInputs, workshopCharges, workshopMetadata } from "./workshop-charges";
 
 async function billingSource(tx: Tx, input: Input) {
   const visit = await tx.document.findFirst({
@@ -31,17 +31,21 @@ async function billVisit(tx: Tx, actor: Actor, visit: Awaited<ReturnType<typeof 
   requireRule(invoiceDay >= serviceDay && invoiceDay <= today(), "invalidInvoiceDate");
   requireRule(input.visitVersion === undefined || input.visitVersion === visit.version, "stale", 409);
   const work = visitWork(visit);
-  const prices = input.servicePrices === undefined && !work.length ? {} : input.servicePrices;
+  const pricedWork = work.filter(({ service }) => requiresServicePrice(service));
+  const prices = input.servicePrices === undefined && !pricedWork.length ? {} : input.servicePrices;
   requireRule(work.length > 0 || billingSelection(visit.metadata).length > 0, "needServices");
-  requireRule(prices !== null && typeof prices === "object" && !Array.isArray(prices) && Object.keys(prices).length === work.length, "needServicePrices");
+  requireRule(prices !== null && typeof prices === "object" && !Array.isArray(prices) &&
+    Object.keys(prices).length === pricedWork.length, "needServicePrices");
   const servicePrices = prices as Record<string, unknown>;
-  const serviceLines = work.map(({ service }, position): LineData => {
+  // Keep the original work positions so receipt rows can find their saved service details.
+  const serviceLines = work.flatMap(({ service }, position): LineData[] => {
+    if (!requiresServicePrice(service)) return [];
     const price = parseMoney(servicePrices[service]);
     requireRule(price !== null && price >= 0n, "needServicePrices");
-    return {
+    return [{
       kind: "service", description: serviceName("en", service), partId: null, quantity: new Prisma.Decimal(1),
       price, discount: 0n, total: price, position,
-    };
+    }];
   });
   await validParty(tx, visit.partyId, "customer");
   const parts = visitParts(visit.metadata);
@@ -63,7 +67,8 @@ async function billVisit(tx: Tx, actor: Actor, visit: Awaited<ReturnType<typeof 
   if (checklist) {
     const requestedCharges = input.workshopCharges === undefined ? workshopCharges(visit.metadata) : record(input.workshopCharges);
     requireRule(chargeTypes.every((type) => checklist.includes(type)
-      ? parseMoney(requestedCharges[type]) !== null : billing.charges[type] === undefined), "invalidWorkshopCharge");
+      ? workshopChargeInputs(requestedCharges, type).some((raw) => parseMoney(raw) !== null)
+      : billing.charges[type] === undefined), "invalidWorkshopCharge");
     requireRule(billing.importRequested === checklist.includes("importedItem"), "importOptionRequired");
     requireRule(!billing.importRequested || billing.importItems.length > 0, "importItemRequired");
   }
@@ -90,6 +95,7 @@ async function billVisit(tx: Tx, actor: Actor, visit: Awaited<ReturnType<typeof 
     metadata: {
       itemizedVisit: true,
       services: work.map((item) => item.service),
+      descriptiveServices: work.filter(({ service }) => !requiresServicePrice(service)).map(({ service }) => service),
       serviceDetails: Object.fromEntries(work.map(({ service, detail }) => [service, detail])),
     },
     snapshot: await snapshot(tx, visit.partyId, visit.vehicleId),

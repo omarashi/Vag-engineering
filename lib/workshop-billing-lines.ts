@@ -4,17 +4,21 @@ import type { LineData } from "./documents";
 import { cents, extended, list, needed, record, requireRule, units } from "./rules";
 import { moneyInput } from "./locale";
 import { type Input } from "./masters";
-import { chargeLabels, chargeTypes, workshopCharges, workshopImports, workshopMetadata, type ImportItem } from "./workshop-charges";
+import { chargeLabels, chargeTypes, workshopChargeInputs, workshopCharges, workshopImports, workshopMetadata, type ImportItem } from "./workshop-charges";
 import { parseMoney } from "./decimal-input";
 
 export function chargeInput(input: unknown) {
   const fields = record(input);
   return Object.fromEntries(chargeTypes.flatMap((type) => {
-    const raw = fields[type];
-    if (raw == null || raw === "") return [];
-    const amount = parseMoney(raw);
-    requireRule(amount !== null && amount >= 0n, "invalidWorkshopCharge");
-    return amount > 0n ? [[type, moneyInput(amount)]] : [];
+    const total = workshopChargeInputs(fields, type).reduce<bigint>((sum, raw) => {
+      if (raw == null || raw === "") return sum;
+      const amount = parseMoney(raw);
+      requireRule(amount !== null && amount >= 0n, "invalidWorkshopCharge");
+      return sum + amount;
+    }, 0n);
+    const formatted = moneyInput(total);
+    requireRule(parseMoney(formatted) !== null, "invalidWorkshopCharge");
+    return total > 0n ? [[type, formatted]] : [];
   }));
 }
 
@@ -68,10 +72,11 @@ export function workshopBillingLines(details: Awaited<ReturnType<typeof workshop
       supplierId: item.supplierId, supplierName: item.supplierName, quantity, price, discount: 0n, total: extended(quantity, price),
       buyingPrice, costTotal: extended(quantity, buyingPrice), position: firstPosition + index };
   });
-  return [...imported, ...chargeTypes.flatMap((purpose): LineData[] => {
-    const amount = cents(details.charges[purpose]);
-    return amount > 0n ? [{ purpose, kind: purpose === "electricalWork" ? "service" : "labor", description: chargeLabels[purpose],
+  return [...imported, ...chargeTypes.flatMap((purpose, index): LineData[] => {
+    const amount = parseMoney(details.charges[purpose] ?? "0");
+    requireRule(amount !== null && amount >= 0n, "invalidWorkshopCharge");
+    return amount > 0n ? [{ purpose, kind: "labor", description: chargeLabels[purpose],
       partId: null, quantity: new Prisma.Decimal(1), price: amount, discount: 0n, total: amount,
-      position: firstPosition + imported.length + chargeTypes.indexOf(purpose) }] : [];
+      position: firstPosition + imported.length + index }] : [];
   })];
 }

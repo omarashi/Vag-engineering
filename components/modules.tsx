@@ -5,12 +5,12 @@ import { db, plain } from "@/lib/db";
 import { workshopPhotosEnabled, workshopPhotosOn } from "@/lib/workshop-photos";
 import { supplierPriceList, supplierQuoteCode } from "@/lib/supplier-price-list";
 import { carName } from "@/lib/car-name";
-import { cashbook, cashbookDate, documents, inventoryFilters, inventoryValue, partCategories, parts, parties, payments, reportDocumentKinds,
+import { cashbook, cashbookDate, documents, interval, inventoryFilters, inventoryValue, partCategories, parts, parties, payments, reportDocumentKinds,
   reportCashSummary, reportDocumentSummary, reportFilters, statement, vehicles, type Filters } from "@/lib/views";
 import { ActionForm } from "./backoffice-form";
 import { Actions, Amt, CashAccountSetup, DocRegister, ExportLink, Heading, Info, Pages, PayRegister, PrintLink, Ref, Register, Toolbar } from "./register";
 import { Badge, ButtonLink, Panel } from "./ui";
-import { date, today } from "@/lib/rules";
+import { addDays, date, today } from "@/lib/rules";
 import { clock, day, label, partCodeLabel, translate, type Language } from "@/lib/locale";
 import { closedJobStatuses, openJobStatuses } from "@/lib/workshop";
 import type { Forms } from "@/lib/forms";
@@ -80,6 +80,7 @@ function StockValues({lang,totals}:{lang:Language;totals:Awaited<ReturnType<type
     <dl className="accounting-totals">
       <div><dt>{t("Total cost")}</dt><dd><Amt lang={lang} value={cost}/></dd></div>
       <div><dt>{t("Total selling value")}</dt><dd><Amt lang={lang} value={selling}/></dd></div>
+      <div><dt>{t("Total potential gross profit")}</dt><dd><Amt lang={lang} value={BigInt(selling)-BigInt(cost)}/></dd></div>
     </dl>
   </Panel>;
   return <div className="module-grid">
@@ -99,10 +100,11 @@ export async function Inventory({lang,forms,query}:ModuleProps){
   </Heading>
     <StockValues lang={lang} totals={totals}/>
     <Toolbar lang={lang} path="/inventory" filters={filters} category status={["active","archived"]}/>
-    <div className="panel"><Register lang={lang} stickyKey head={[partCodeLabel(lang),"Part","Category","In stock","Cost","Price","Total cost","Total selling value"]} rows={rows.map((row)=>[
+    <div className="panel"><Register lang={lang} stickyKey head={[partCodeLabel(lang),"Part","Category","In stock","Cost","Price","Total cost","Total selling value","Potential gross profit"]} rows={rows.map((row)=>[
       <Ref href={"/inventory/"+row.id}>{row.code}</Ref>,<bdi>{row.name}</bdi>,<bdi>{row.category}</bdi>,
       <span className={row.low?"text-amber-400":""}>{String(row.onHand)} {row.unit}{row.low?" · "+translate(lang,"Low stock"):""}</span>,<Amt lang={lang} value={row.cost}/>,<Amt lang={lang} value={row.price}/>,
       <Amt lang={lang} value={row.stockCost}/>,<Amt lang={lang} value={row.stockSellingValue}/>,
+      <Amt lang={lang} value={BigInt(row.stockSellingValue)-BigInt(row.stockCost)}/>,
     ])}/></div><Pages lang={lang} path="/inventory" filters={filters} count={rows.length}/></>;
 }
 export async function Purchasing({lang,forms,query}:ModuleProps){
@@ -121,7 +123,7 @@ export async function Purchasing({lang,forms,query}:ModuleProps){
     {forms.can("purchase")&&<ButtonLink href="/purchasing/price-list">{tr("Supplier price list")}</ButtonLink>}
   </Heading>
     <Toolbar lang={lang} path="/purchasing" filters={query} dateRange party={forms.adapters.supplier}/>
-    <div className="module-grid"><Panel title={tr("Purchases")}><DocRegister lang={lang} docs={purchases}/></Panel><Panel title={tr("Purchase orders")}><DocRegister lang={lang} docs={orders}/></Panel>
+    <div className="module-grid"><Panel title={tr("Purchases")}><DocRegister lang={lang} docs={purchases} showSupplierInvoice/></Panel><Panel title={tr("Purchase orders")}><DocRegister lang={lang} docs={orders}/></Panel>
       <Panel title={tr("Suppliers")}><Register lang={lang} head={["Name","Phone","Contact","Documents"]} rows={suppliers.map((row)=>[
         <Ref href={"/purchasing/"+row.id}>{row.name}</Ref>,<bdi>{row.phone}</bdi>,<bdi>{row.contact}</bdi>,row._count.documents,
       ])}/></Panel></div><Pages lang={lang} path="/purchasing" filters={query} count={Math.max(suppliers.length,orders.length,purchases.length)}/></>;
@@ -170,14 +172,12 @@ export async function Balances({lang,forms,query}:ModuleProps){
 }
 export async function Cash({lang,forms,query}:ModuleProps){
   const selected=cashbookDate(query.date);
-  const [{rows,entries,total},expenses]=await Promise.all([
-    cashbook(selected,query),documents(["expense"],{...query,page:undefined,from:query.from ?? selected,to:query.to ?? selected}),
-  ]);
+  const {rows,entries,total}=await cashbook(selected,query);
   const tr=(key:string)=>translate(lang,key);
   const activeAccounts=forms.adapters.accounts.length;
-  return <><Heading lang={lang} title="Cash & expenses">
-    <Actions lang={lang} forms={forms} specs={[activeAccounts>0&&forms.paidExpense(selected)]} auto={query.new}/>
+  return <><Heading lang={lang} title="Cashbook">
     <ButtonLink href="/cash/transactions">{tr("View transactions")}</ButtonLink>
+    <ButtonLink href={"/expenses?from="+selected+"&to="+selected}>{tr("Expenses")}</ButtonLink>
     {!activeAccounts&&<CashAccountSetup lang={lang} canManage={forms.can("account")}/>}
   </Heading>
     <div className="detail-stack">
@@ -225,11 +225,40 @@ export async function Cash({lang,forms,query}:ModuleProps){
         </Panel>
         <Pages lang={lang} path="/cash" filters={{...query,date:selected}} count={entries.length}/>
       </div>
-      <Panel title={tr("Expenses")}>
-        <Actions lang={lang} forms={forms} specs={[forms.expense()]} auto={query.new} primary={false}/>
-        <DocRegister lang={lang} docs={expenses}/>
-      </Panel>
     </div>
+  </>;
+}
+export async function Expenses({lang,forms,query}:ModuleProps){
+  const tr=(key:string)=>translate(lang,key);
+  const now=today();
+  const {gte,lt}=interval(query);
+  const last=lt ? addDays(today(lt),-1) : undefined;
+  const from=gte ? today(gte) : last ?? now;
+  const to=last ?? from;
+  const {q,category,page}=query;
+  const filters={from,to,q,category,page};
+  const [rows,{expenses}]=await Promise.all([
+    documents(["expense"],filters),reportDocumentSummary("expenses",filters),
+  ]);
+  const weekStart=addDays(now,-new Date(now+"T12:00:00Z").getUTCDay());
+  const weekEnd=addDays(weekStart,6);
+  const period=(from:string,to:string)=>"/expenses?"+new URLSearchParams({from,to,...(q&&{q}),...(category&&{category})});
+  const entryDate=from===to && from<=now ? from : now;
+  const hasAccounts=forms.adapters.accounts.length>0;
+  return <><Heading lang={lang} title="Expenses">
+    <Actions lang={lang} forms={forms} specs={[hasAccounts&&forms.paidExpense(entryDate)]} auto={query.new}/>
+    {!hasAccounts&&<CashAccountSetup lang={lang} canManage={forms.can("account")}/>}
+  </Heading>
+    <div className="page-actions mb-3">
+      <ButtonLink href={period(now,now)} primary={from===now&&to===now}>{tr("Today")}</ButtonLink>
+      <ButtonLink href={period(weekStart,weekEnd)} primary={from===weekStart&&to===weekEnd}>{tr("This week")}</ButtonLink>
+    </div>
+    <Toolbar lang={lang} path="/expenses" filters={filters} dateRange category/>
+    <Panel title={tr("Expense records")}>
+      <dl className="accounting-totals"><div><dt>{tr("Total posted expenses")}</dt><dd><Amt lang={lang} value={expenses}/></dd></div></dl>
+      <DocRegister lang={lang} docs={rows} showDue={false}/>
+    </Panel>
+    <Pages lang={lang} path="/expenses" filters={filters} count={rows.length}/>
   </>;
 }
 export async function CashTransactions({lang,query,role}:Omit<ModuleProps,"forms">&{role:Role}){
@@ -240,7 +269,7 @@ export async function CashTransactions({lang,query,role}:Omit<ModuleProps,"forms
   const tr=(key:string)=>translate(lang,key);
   const path="/cash/transactions";
   return <><Heading lang={lang} title="Transactions">
-    <ButtonLink href="/cash">{tr("Cash & expenses")}</ButtonLink>
+    <ButtonLink href="/cash">{tr("Cashbook")}</ButtonLink>
     {can(role,"export")&&<ExportLink lang={lang} report="payments" filters={query}/>}
   </Heading>
     <Toolbar lang={lang} path={path} filters={query} dateRange
@@ -332,7 +361,7 @@ export async function Reports({lang,forms,query}:ModuleProps){
     <Panel title={tr(reports[report])}>{report==="stock"?<Register lang={lang} stickyKey head={[partCodeLabel(lang),"Part","In stock","Cost","Price","Total cost","Total selling value"]} rows={stock.map((row)=>[
       <Ref href={"/inventory/"+row.id}>{row.code}</Ref>,row.name,String(row.onHand),<Amt lang={lang} value={row.cost}/>,
       <Amt lang={lang} value={row.price}/>,<Amt lang={lang} value={row.stockCost}/>,<Amt lang={lang} value={row.stockSellingValue}/>,
-    ])}/>:<DocRegister lang={lang} docs={rows}/>}</Panel>
+    ])}/>:<DocRegister lang={lang} docs={rows} showDue={report!=="expenses"}/>}</Panel>
     {report==="sales"&&<Panel title={tr("Line items")}><Register lang={lang} head={["Number","Type","Description","Quantity","Total","Cost"]} rows={saleLines.map((line)=>[<Ref href={"/record/"+line.document.id}>{line.document.number}</Ref>,label(lang,line.kind),<bdi>{line.description}</bdi>,String(line.quantity),<Amt lang={lang} value={line.total}/>,<Amt lang={lang} value={line.costTotal}/>])}/></Panel>}
     </div><Pages lang={lang} path="/reports" filters={filters} report={report} count={Math.max(rows.length,stock.length)}/></>;
 }

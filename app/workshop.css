@@ -1,5 +1,5 @@
 .log-shell{--log-width:218px;display:grid;grid-template-columns:var(--log-width) minmax(0,1fr);min-height:100dvh}
-.log-sidebar{position:sticky;top:0;height:100dvh;display:flex;flex-direction:column;background:var(--side);border-inline-end:1px solid var(--edge)}
+.log-sidebar{position:sticky;inset-block-start:0;align-self:start;height:100dvh;overflow:auto;display:flex;flex-direction:column;background:var(--side);border-inline-end:1px solid var(--edge)}
 .log-brand{display:flex;align-items:center;min-height:75px;padding-inline:20px;border-bottom:1px solid var(--edge-soft)}
 .log-brand .mark small{font-size:12px}
 .log-nav{display:grid;gap:7px;padding:24px 13px}
@@ -106,6 +106,21 @@
 .log-filters{display:flex;gap:7px;flex-wrap:wrap;align-items:end;margin-bottom:14px}
 .log-filters .log-search{flex:1;min-width:min(180px,100%)}
 .log-content .toolbar{align-items:end}
+.table-frame{min-inline-size:0}
+.table-pinned-header{display:none}
+@media screen{
+  .log-content{--log-toolbar-top:var(--log-topbar-height,65px)}
+  .log-content :is(.toolbar,.log-filters){position:sticky;inset-block-start:calc(var(--log-toolbar-top) + var(--toolbar-stack,0px));z-index:3}
+  .log-content .log-filters{background:var(--bg)}
+  .log-content .table-frame[data-sticky-header]>.table-pinned-header{
+    display:block;position:sticky;inset-block-start:calc(var(--log-toolbar-top) + var(--toolbar-stack,0px));z-index:2;
+    block-size:var(--table-heading-height);overflow:hidden;pointer-events:none
+  }
+  .table-pinned-header>table{table-layout:fixed}
+  .log-content .table-frame[data-sticky-header]>.table-register{margin-block-start:calc(-1 * var(--table-heading-height))}
+  .log-content .table-frame[data-sticky-header]>.table-register>table>thead{opacity:0}
+}
+@media screen and (max-width:620px){.table-pinned-header th{padding-inline:9px}}
 .log-content :is(.log-filters,.toolbar,.payroll-week form) :is(select,.button,input:not([type=hidden])){min-block-size:var(--form-control-height)}
 .log-content :is(.log-filters .log-search,.toolbar .search-box) input{min-block-size:calc(var(--form-control-height) - 2px)}
 .log-content :is(.log-filters,.toolbar) .button{white-space:normal;text-align:center}
@@ -197,7 +212,8 @@
   .log-topbar .log-search{flex:1;width:auto}
   .log-mobile-brand{display:block;flex:none}.log-mobile-brand img{border-radius:8px}
   .log-top-actions{gap:2px}.log-top-actions .profile-text,.log-top-actions .profile>svg{display:none}.log-top-actions .avatar{width:28px;height:28px}
-  .log-content{width:100%;padding:16px 12px;overflow:hidden auto;overscroll-behavior:none}
+  .log-content{--log-toolbar-top:0px;width:100%;padding:0 12px;overflow:hidden auto;overscroll-behavior:none}
+  .log-route-content{padding-block:16px}
   .log-content .detail-stack{grid-template-columns:minmax(0,1fr)}
   .log-content .accounting-filter{min-width:0;max-width:100%}
   .log-content .table-scroll{overscroll-behavior-x:contain}

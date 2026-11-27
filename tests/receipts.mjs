@@ -25,7 +25,8 @@ try {
   await post(owner, "stock", { partId, quantity: "8", kind: "adjustment", reason: "Itemized invoice test" });
   const onHand = async () => (await db.part.findUniqueOrThrow({ where: { id: partId } })).onHand.toString();
   const visit = {
-    partyId, vehicleId, title: "Oil service and Stage 1", services: ["maintenance", "tuning"], at: "2025-11-17",
+    partyId, vehicleId, title: "Oil service and Stage 1", at: "2025-11-17",
+    services: ["maintenance", "other", "tuning", "installation", "diagnostics", "inspection"],
     serviceDetails: { maintenance: "Replaced engine oil and filter.", tuning: "Calibrated ECU and checked boost logs." },
     parts: [{ partId, quantity: "2" }],
   };
@@ -41,11 +42,12 @@ try {
   await post(owner, "part", { ...part, id: partId, version: catalogPart.version, price: "225" });
   assert.equal(await onHand(), "8");
   const account = await db.moneyAccount.findFirstOrThrow({ where: { kind: "cash", archived: false } });
-  const servicePrices = { maintenance: "١٠٠٫٢٥", tuning: "149.75" };
+  const servicePrices = { other: "١٠٠٫٢٥", tuning: "149.75" };
   const payment = { visitId, amount: "200", servicePrices, at: "2025-11-17", accountId: account.id, method: "cash" };
   assert.equal((await action(technician, "visitInvoice", { visitId, servicePrices })).status, 403);
   assert.equal((await action(technician, "visitReceipt", payment)).status, 403);
   assert.equal((await action(owner, "visitReceipt", { ...payment, servicePrices: { tuning: "250" } })).status, 422);
+  assert.equal((await action(owner, "visitReceipt", { ...payment, servicePrices: { ...servicePrices, maintenance: "50" } })).status, 422);
   assert.equal((await action(owner, "visitInvoice", { visitId, servicePrices: { ...servicePrices, tuning: "-1" } })).status, 422);
   assert.equal((await action(owner, "visitInvoice", { visitId, servicePrices, visitVersion: 999 })).status, 409);
   assert.equal((await action(owner, "visitReceipt", { ...payment, amount: "600" })).status, 422);
@@ -59,10 +61,12 @@ try {
     include: { allocations: true, lines: { orderBy: { position: "asc" } } },
   });
   assert.equal(invoice.total, 50000n);
-  assert.deepEqual(invoice.metadata.serviceDetails, visit.serviceDetails);
+  assert.deepEqual(invoice.metadata.serviceDetails,
+    Object.fromEntries(visit.services.map((service) => [service, visit.serviceDetails[service] ?? ""])));
+  assert.deepEqual(invoice.metadata.descriptiveServices, ["maintenance", "installation", "diagnostics", "inspection"]);
   assert.equal(invoice.metadata.itemizedVisit, true);
   assert.deepEqual(invoice.lines.map(({ description, price, total }) => [description, price, total]), [
-    ["Routine maintenance", 10025n, 10025n], ["Software tuning", 14975n, 14975n], [part.code + " · Oil filter", 12500n, 25000n],
+    ["Other work", 10025n, 10025n], ["Software tuning", 14975n, 14975n], [part.code + " · Oil filter", 12500n, 25000n],
   ]);
   assert.equal(invoice.lines[2].partId, partId);
   assert.equal(invoice.lines[2].quantity.toString(), "2");
@@ -99,9 +103,16 @@ try {
   const html = await read.text();
   assert.match(html, /dir="rtl" lang="ar-EG"/);
   assert.match(html, /<bdi>Golf White<\/bdi>/);
+  const printedRows = html.match(/<tr>.*?<\/tr>/g) ?? [];
+  for (const name of ["صيانة دورية", "صيانة اعطال", "كشف أعطال", "فحص"]) {
+    const row = printedRows.find((row) => row.includes("<span>" + name + "<"));
+    assert.ok(row?.endsWith("<td><bdi></bdi></td>".repeat(4) + "</tr>"), name);
+  }
+  assert.doesNotMatch(html, /<section class="print-work">/);
   assert.match(html, /Replaced engine oil and filter/);
   assert.match(html, /Calibrated ECU and checked boost logs/);
   assert.match(html, /Oil filter/);
+  assert.ok(html.includes("<td><bdi>قطع غيار</bdi></td>"));
   assert.match(html, /alt="Workshop Print QA"[^>]*src="\/storefront\.jpg"/);
   assert.match(html, /receipt-print-brand"><strong>Workshop Print QA/);
   assert.doesNotMatch(html, /الباقي اللي اتردّ/);
@@ -121,10 +132,21 @@ try {
     const sourceId = await post(technician, "visit", {
       title: detail, partyId, vehicleId, at, services: ["inspection"], serviceDetails: { inspection: detail },
     });
-    return post(owner, "visitInvoice", { visitId: sourceId, at, servicePrices: { inspection: price } });
+    return post(owner, "visitInvoice", { visitId: sourceId, at, workshopCharges: { generalLabor: price } });
   }
   const older = await chargeVisit("2025-11-18", vehicleId, "300", "Inspect brakes and suspension");
   const newer = await chargeVisit("2025-11-19", secondCar, "400", "Scan transmission faults");
+  // Model a posted invoice that priced inspection before it became descriptive.
+  const olderInvoice = await db.document.findUniqueOrThrow({ where: { id: older }, include: { lines: true } });
+  const { descriptiveServices, ...historicalMetadata } = olderInvoice.metadata;
+  await db.$transaction([
+    db.document.update({ where: { id: older }, data: { metadata: historicalMetadata } }),
+    db.line.update({ where: { id: olderInvoice.lines[0].id }, data: { kind: "service", purpose: null, position: 0, description: "Inspection" } }),
+  ]);
+  const historicalPrint = await fetch(base + "/print/record/" + older + "?lang=en", { headers: { Cookie: accountant } });
+  assert.equal(historicalPrint.status, 200);
+  const historicalLine = (await historicalPrint.text()).match(/<tr>[^\n]*?<\/tr>/g)?.find(row => row.includes("Inspect brakes and suspension"));
+  assert.match(historicalLine ?? "", /EGP\s*300\.00/);
   const opening = await post(owner, "opening", { kind: "customerOpening", partyId, at: "2025-11-20", amount: "25", reference: "Paper balance " + randomUUID() });
   for (const id of [older, newer, opening]) assert.equal((await db.document.findUniqueOrThrow({ where: { id } })).dueAt, null);
   const debt = { partyId, amount: "٣٥٠", at: "2025-11-21", accountId: account.id, method: "cash",
@@ -303,9 +325,10 @@ try {
   assert.match(settledHtml, /Remaining balance.*0\.00/);
 
   const heldJob = await post(technician, "jobIntake", {
-    partyId, vehicleId, jobMode: "stay", at: "2025-11-17", receivedBy: "Billing QA", services: ["installation","inspection"],
+    partyId, vehicleId, jobMode: "stay", at: "2025-11-17", receivedBy: "Billing QA",
+    services: ["installation", "inspection", "tuning", "other"],
   });
-  const checkout = { visitId: heldJob, servicePrices: { installation: "400",inspection:"200" }, amount: "300", accountId: account.id, at: "2025-11-18" };
+  const checkout = { visitId: heldJob, servicePrices: { tuning: "400", other: "200" }, amount: "300", accountId: account.id, at: "2025-11-18" };
   const beforeDelivery = await action(owner, "visitReceipt", checkout);
   assert.equal(beforeDelivery.status, 422);
   assert.equal((await beforeDelivery.json()).error, "finishBeforeBilling");

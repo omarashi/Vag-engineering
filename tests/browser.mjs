@@ -12,6 +12,14 @@ const errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
 const proofs = "test-results/v2/" + randomUUID().slice(0,8);
 await mkdir(proofs, { recursive: true });
+
+async function expectDescriptiveRow(table, description, blankColumns = 4) {
+  const row = table.getByRole("row").filter({ hasText: description });
+  await row.waitFor();
+  const cells = await row.getByRole("cell").allTextContents();
+  assert.deepEqual(cells.slice(2), Array(blankColumns).fill(""), description);
+}
+
 try {
   for (const remember of [false, true]) {
     const login = await browser.newPage();
@@ -77,6 +85,7 @@ try {
   await page.getByRole("button", { name: "Add product", exact: true }).click();
   const product = page.getByRole("dialog", { name: "Add product", exact: true });
   await product.getByRole("button", { name: "Add manually", exact: true }).click();
+  assert.equal(await product.getByRole("textbox", { name: "OEM number", exact: true }).count(), 0);
   await product.getByRole("textbox", { name: "Code", exact: true }).fill(code + "-STOCK");
   await product.getByRole("textbox", { name: "Name", exact: true }).fill("Product starting stock " + code);
   const category = product.getByRole("combobox", { name: "Category", exact: true });
@@ -102,6 +111,16 @@ try {
   await page.waitForURL(base + "/inventory");
   const stockedProductRow = page.getByRole("row").filter({ has: page.getByRole("link", { name: code + "-STOCK", exact: true }) });
   await stockedProductRow.getByText(/Low stock/).waitFor();
+  await stockedProductRow.getByRole("link", { name: code + "-STOCK", exact: true }).click();
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  const editProduct = page.getByRole("dialog", { name: "Edit", exact: true });
+  assert.equal(await editProduct.getByRole("textbox", { name: "OEM number", exact: true }).count(), 0);
+  const startingQuantity = editProduct.getByRole("textbox", { name: /^Starting quantity/ });
+  assert.equal(await startingQuantity.inputValue(), "2.5");
+  await startingQuantity.fill("4");
+  await editProduct.getByRole("button", { name: "Save", exact: true }).click();
+  await stockCount.getByText("3.5", { exact: true }).waitFor();
+  await page.getByRole("link", { name: "Back to inventory", exact: true }).click();
   await page.getByRole("button", { name: "Add product", exact: true }).click();
   await product.getByRole("button", { name: "Add manually", exact: true }).click();
   assert.ok((await product.getByRole("combobox", { name: "Category", exact: true }).locator("option").allTextContents()).includes(newCategory));
@@ -164,6 +183,15 @@ try {
   });
   assert.equal(duplicatePurchase.status(), 409);
   assert.equal((await duplicatePurchase.json()).error, "duplicateReference");
+  const otherSupplier = await fixture("supplier", { name: "Other purchase QA " + code });
+  const otherPurchase = await fixture("purchase", { ...numberedPurchase, partyId: otherSupplier });
+  await page.goto(base + "/purchasing?q=" + encodeURIComponent(numberedPurchase.reference));
+  await page.getByRole("columnheader", { name: "Supplier invoice number", exact: true }).waitFor();
+  const purchaseLinks = page.getByRole("link", { name: numberedPurchase.reference, exact: true });
+  assert.deepEqual((await purchaseLinks.evaluateAll(links=>links.map(link=>link.getAttribute("href")))).sort(),
+    ["/record/"+numberedId,"/record/"+otherPurchase].sort());
+  await purchaseLinks.and(page.locator(`a[href="/record/${otherPurchase}"]`)).click();
+  await page.waitForURL(base+"/record/"+otherPurchase);
 
   await page.goto(base + "/counter-sale");
   const counterName = page.getByLabel("Customer name");
@@ -232,6 +260,7 @@ try {
   await newJob.getByLabel("Date received").fill("2025-11-17");
   await newJob.getByRole("checkbox", { name: "Diagnostics", exact: true }).check();
   await newJob.getByLabel("Details for Diagnostics").fill("Troubleshoot an intermittent electrical issue");
+  await newJob.getByRole("checkbox", { name: "General labor", exact: true }).check();
   assert.equal(await newJob.getByLabel("Delivery date").count(), 0);
   await newJob.getByRole("button", { name: "Save job", exact: true }).click();
   await page.getByRole("heading", { name: "Diagnostics", exact: true }).waitFor();
@@ -255,7 +284,8 @@ try {
   await finish.getByLabel("Delivery date").fill("2025-11-19");
   await finish.getByRole("button", { name: "Save and take payment" }).click();
   const stayReceipt = page.getByRole("dialog", { name: "Create invoice and take payment" });
-  await stayReceipt.getByLabel("Price for Diagnostics").fill("450");
+  assert.equal(await stayReceipt.getByLabel("Price for Diagnostics").count(), 0);
+  await stayReceipt.getByLabel("General labor", { exact: true }).fill("450");
   await stayReceipt.getByLabel("Discount (EGP)").fill("50");
   assert.match(await stayReceipt.getByLabel("Invoice total").innerText(),/400\.00/);
   await stayReceipt.getByLabel("Amount paid (EGP)").fill("150");
@@ -411,7 +441,8 @@ try {
   await page.screenshot({ path: proofs + "/visit-eg-phone.png", fullPage: true, caret: "initial" });
   await visit.getByRole("button", { name: "احفظ وسجّل الدفع" }).click();
   const quickReceipt = page.getByRole("dialog", { name: "اعمل الفاتورة وسجّل الدفع" });
-  await quickReceipt.getByLabel("سعر صيانة دورية", { exact: true }).waitFor();
+  await quickReceipt.getByRole("region", { name: "الشغل اللي اتعمل" }).getByText("صيانة دورية", { exact: true }).waitFor();
+  assert.equal(await quickReceipt.getByLabel("سعر صيانة دورية", { exact: true }).count(), 0);
   await quickReceipt.getByRole("button", { name: "إلغاء", exact: true }).click();
   await page.getByRole("heading", { name: serviceNames.join("، "), exact: true }).waitFor();
   const quickPath = new URL(page.url()).pathname;
@@ -430,9 +461,11 @@ try {
   const priceForm = page.getByRole("dialog", { name: "اعمل فاتورة" });
   await priceForm.getByRole("button", { name: "احفظ الفاتورة" }).click();
   await priceForm.getByRole("alert").getByText("اكتب سعر كل شغل اتعمل. لو الشغل ببلاش، اكتب ٠.").waitFor();
-  const servicePrices = ["٠", "٣٠٠٫٢٥", "٠", "٠", "٣٩٩٫٧٥", "٠"];
-  for (const [index, service] of serviceNames.entries()) {
-    await priceForm.getByLabel("سعر " + service, { exact: true }).fill(servicePrices[index]);
+  const pricedServices = { "شغل تاني": "٣٠٠٫٢٥", "سوفت تيون": "٣٩٩٫٧٥" };
+  for (const service of serviceNames) {
+    const price = priceForm.getByLabel("سعر " + service, { exact: true });
+    if (Object.hasOwn(pricedServices, service)) await price.fill(pricedServices[service]);
+    else assert.equal(await price.count(), 0, service);
   }
   const parts = priceForm.getByRole("region", { name: "قطع الغيار المباعة" });
   await parts.getByText("Spark plug kit", { exact: true }).waitFor();
@@ -446,7 +479,7 @@ try {
   await page.screenshot({ path: proofs + "/invoice-form-eg-phone.png", caret: "initial" });
   await priceForm.getByRole("button", { name: "احفظ الفاتورة" }).click();
   await page.waitForURL("**/record/**");
-  await page.locator("table").getByText(maintenance, { exact: true }).waitFor();
+  await expectDescriptiveRow(page, maintenance, 5);
   await page.goto(visitUrl);
   await page.getByRole("button", { name: "سجّل إيصال" }).click();
   const receipt = page.getByRole("dialog", { name: "سجّل إيصال" });
@@ -456,8 +489,12 @@ try {
   await receipt.getByRole("button", { name: "احفظ الإيصال" }).click();
   await page.waitForURL("**/payment/**");
   const receiptDetails = page.locator(".receipt-details");
-  await receiptDetails.getByText(maintenance, { exact: true }).waitFor();
-  await receiptDetails.getByText(code + " · Spark plug kit", { exact: true }).waitFor();
+  const receiptTable = receiptDetails.getByRole("table");
+  await expectDescriptiveRow(receiptTable, maintenance);
+  for (const service of serviceNames.filter(name => !Object.hasOwn(pricedServices, name))) {
+    await expectDescriptiveRow(receiptTable, service);
+  }
+  await receiptTable.getByText(code + " · Spark plug kit", { exact: true }).waitFor();
   assert.match(await receiptDetails.locator(".receipt-totals").last().innerText(), /١٬٢٥٠٫٠٠/);
   await page.getByRole("link", { name: "حساب العميل", exact: true }).click();
   const customerBalance = page.locator("#customer-balance");
@@ -498,7 +535,9 @@ try {
     const [servicePrice, unitPrice, partPrice, before, paid, after] = language === "eg"
       ? [/٣٠٠٫٢٥/, /٢٧٥٫٠٠/, /٥٥٠٫٠٠/, /٨٠٠٫٠٠/, /٣٠٠٫٠٠/, /٥٠٠٫٠٠/]
       : [/300\.25/, /275\.00/, /550\.00/, /800\.00/, /300\.00/, /500\.00/];
-    assert.match(await sheet.getByRole("row").filter({ hasText: maintenance }).innerText(), servicePrice);
+    await expectDescriptiveRow(sheet, maintenance);
+    const otherName = language === "eg" ? "شغل تاني" : "Other work";
+    assert.match(await sheet.getByRole("row").filter({ hasText: otherName }).innerText(), servicePrice);
     await sheet.getByText(tune, { exact: true }).waitFor();
     const partRow = sheet.getByRole("row").filter({ hasText: code + " · Spark plug kit" });
     assert.match(await partRow.innerText(), unitPrice);
@@ -525,12 +564,13 @@ try {
   for (const language of ["eg", "en"]) {
     if (language === "en") await page.getByRole("link", { name: "English", exact: true }).click();
     const sheet = page.locator(".print-sheet[dir='" + (language === "eg" ? "rtl" : "ltr") + "']");
-    const [maintenancePrice, tuningPrice, unitPrice, partTotal, invoiceTotal] = language === "eg"
+    const [otherPrice, tuningPrice, unitPrice, partTotal, invoiceTotal] = language === "eg"
       ? [/٣٠٠٫٢٥/, /٣٩٩٫٧٥/, /٢٧٥٫٠٠/, /٥٥٠٫٠٠/, /١٬٢٥٠٫٠٠/]
       : [/300\.25/, /399\.75/, /275\.00/, /550\.00/, /1,250\.00/];
-    const serviceRows = [sheet.getByRole("row").filter({ hasText: maintenance }), sheet.getByRole("row").filter({ hasText: tune })];
-    assert.match(await serviceRows[0].innerText(), maintenancePrice);
-    assert.match(await serviceRows[1].innerText(), tuningPrice);
+    await expectDescriptiveRow(sheet, maintenance);
+    const otherName = language === "eg" ? "شغل تاني" : "Other work";
+    assert.match(await sheet.getByRole("row").filter({ hasText: otherName }).innerText(), otherPrice);
+    assert.match(await sheet.getByRole("row").filter({ hasText: tune }).innerText(), tuningPrice);
     const partRow = sheet.getByRole("row").filter({ hasText: code + " · Spark plug kit" });
     assert.match(await partRow.innerText(), unitPrice);
     assert.match(await partRow.innerText(), partTotal);
@@ -557,13 +597,69 @@ try {
   await debtAmount.fill("٥٠٠");
   await debt.getByRole("button", { name: "تأكيد الدفع" }).click();
   await receiptLink.click();
-  const finalSummary = await page.locator(".receipt-totals dd").allTextContents();
+  await page.waitForURL("**/payment/**");
+  const finalTotals = page.locator(".receipt-totals dd");
+  await finalTotals.last().waitFor();
+  const finalSummary = await finalTotals.allTextContents();
   assert.match(finalSummary[1], /٥٠٠٫٠٠/);
   assert.match(finalSummary[2], /٥٠٠٫٠٠/);
   assert.match(finalSummary[3], /٠٫٠٠/);
   await page.goto(debtListUrl);
   await page.getByText("مفيش عميل عليه فلوس مطابق للبحث", { exact: true }).waitFor();
   assert.equal(await debtor.count(), 0);
+  for (const [lang, width] of [["en", 1440], ["ar", 390]]) {
+    await page.context().addCookies([{ url:base, name:"vag-lang", value:lang }]);
+    await page.setViewportSize({ width, height:844 });
+    for (const path of ["/inventory", "/purchasing", "/payroll"]) {
+      await page.goto(base+path);
+      const table = page.locator(".table-register").first();
+      await table.locator("tbody tr").first().waitFor();
+      await table.locator("..").locator(".table-pinned-header thead").waitFor();
+      const layout = await table.evaluate(async (register) => {
+        const main = document.querySelector(".log-content");
+        const topbar = document.querySelector(".log-topbar");
+        const toolbar = main.querySelector(".toolbar");
+        const sidebar = document.querySelector(".log-sidebar");
+        const tbody = register.querySelector("tbody");
+        const pinned = register.parentElement.querySelector(".table-pinned-header");
+        const thead = pinned.querySelector("thead");
+        tbody.append(...Array.from({length:36},()=>tbody.rows[0].cloneNode(true)));
+        const distance = register.getBoundingClientRect().top-topbar.getBoundingClientRect().bottom+300;
+        const scrollTo = (top) => {
+          if (innerWidth<=850) main.scrollTop=top;
+          else window.scrollTo(0,top);
+        };
+        register.scrollLeft=document.dir==="rtl"?-register.scrollWidth:register.scrollWidth;
+        await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+        // Sample immediately after scrolling in both directions, before any scroll handler could realign the header.
+        const headerTops = [0, 27, 74, 15, 0].map(offset => {
+          scrollTo(distance+offset);
+          return thead.getBoundingClientRect().top;
+        });
+        return {
+          scrolled:window.scrollY+main.scrollTop,
+          sidebarTop:sidebar.getBoundingClientRect().top,
+          topbarBottom:topbar.getBoundingClientRect().bottom,
+          toolbarTop:toolbar.getBoundingClientRect().top,
+          toolbarBottom:toolbar.getBoundingClientRect().bottom,
+          headerTop:thead.getBoundingClientRect().top,
+          headerDrift:Math.max(...headerTops)-Math.min(...headerTops),
+          headerScrollX:pinned.scrollLeft,
+          columnsAligned:Math.abs(thead.rows[0].cells[2].getBoundingClientRect().left-tbody.rows[0].cells[2].getBoundingClientRect().left)<1,
+          tableX:register.scrollLeft,
+        };
+      });
+      const description = `${lang} ${path} ${JSON.stringify(layout)}`;
+      assert.ok(layout.scrolled>250,description);
+      if (width>850) assert.equal(layout.sidebarTop,0,description);
+      if (width<850) assert.ok(layout.tableX<0,description);
+      assert.ok(Math.abs(layout.topbarBottom-layout.toolbarTop)<2,description);
+      assert.ok(Math.abs(layout.toolbarBottom-layout.headerTop)<2,description);
+      assert.ok(layout.headerDrift<1,description);
+      assert.ok(Math.abs(layout.headerScrollX-layout.tableX)<1,description);
+      assert.ok(layout.columnsAligned,description);
+    }
+  }
   assert.deepEqual(errors, []);
   console.log("PASS purchase search and optional supplier invoice number, jobs, mobile, billing, debts, and bilingual print.");
 } finally { await browser.close(); }

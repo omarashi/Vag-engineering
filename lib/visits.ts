@@ -8,7 +8,7 @@ import { hasServiceTitle, intakeStatuses, jobModes, serviceSummary, visitParts, 
 import type { Actor, Change } from "./transaction";
 import { can } from "./permissions";
 import { billingMetadata, hasBillingInput, workshopBillingData } from "./workshop-billing-lines";
-import { billingSelection, billingServiceLabels, billingServices, chargeTypes, savedBillingSelection, workshopCharges, workshopImports } from "./workshop-charges";
+import { billingSelection, billingServiceLabels, billingServices, chargeTypes, normalizeBillingService, savedBillingSelection, workshopCharges, workshopImports } from "./workshop-charges";
 
 async function saveVisitParts(tx: Tx, input: unknown, prior: VisitPart[], visitId?: string) {
   if (input === undefined) return prior;
@@ -93,8 +93,8 @@ async function saveServiceRecord(tx: Tx, input: Input, actor: Actor, kind: "visi
   const choices = before && visitServiceTypes(before).includes("repair") ? serviceTypes : selectableServices;
   const checklist = input.billingChecklist === true;
   const allowed = checklist ? [...choices, ...billingServices] : choices;
-  requireRule(Array.isArray(requested) && requested.length <= allowed.length, "needServices");
-  const selected = [...new Set(requested.map((service) => choice(service, allowed)))];
+  requireRule(Array.isArray(requested) && requested.length <= allowed.length + (checklist ? 1 : 0), "needServices");
+  const selected = [...new Set(requested.map((service) => choice(checklist ? normalizeBillingService(service) : service, allowed)))];
   const services = selected.filter(isService);
   const selectedBilling = checklist ? billingServices.filter((service) => selected.includes(service)) : billingSelection(before?.metadata);
   requireRule(services.length > 0 || selectedBilling.length > 0, "needServices");

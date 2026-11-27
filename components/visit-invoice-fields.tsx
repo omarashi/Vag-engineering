@@ -2,10 +2,11 @@
 
 import { normalize, parseMoney } from "@/lib/decimal-input";
 import { money, translate, type Language } from "@/lib/locale";
-import { serviceName } from "@/lib/services";
+import { requiresServicePrice, serviceName } from "@/lib/services";
 import type { VisitPart, WorkDetail } from "@/lib/visit-items";
 import { chargeTypes, importSellingTotal, type BillingService, type ChargeType, type ImportInput } from "@/lib/workshop-charges";
 import { WorkshopBillingFields, type BillingValues, type SupplierOption } from "./workshop-billing-fields";
+import { VisitWorkList } from "./visit-work-list";
 
 export type VisitInvoicePricing = {
   work: WorkDetail[];
@@ -26,7 +27,9 @@ export function VisitInvoiceFields({ lang, pricing, prices, discount, onDiscount
   onBillingChange: (key: string, value: boolean | Partial<Record<ChargeType, string>> | ImportInput[]) => void;
 }) {
   const t = (key: string) => translate(lang, key);
-  const servicesSubtotal = pricing.work.reduce((sum, { service }) => {
+  const pricedWork = pricing.work.filter(({ service }) => requiresServicePrice(service));
+  const describedWork = pricing.work.filter(({ service }) => !requiresServicePrice(service));
+  const servicesSubtotal = pricedWork.reduce((sum, { service }) => {
     const price = parseMoney(prices[service]);
     return sum + (price !== null && price >= 0n ? price : 0n);
   }, 0n);
@@ -41,9 +44,13 @@ export function VisitInvoiceFields({ lang, pricing, prices, discount, onDiscount
   const quantity = new Intl.NumberFormat(lang === "ar" ? "ar-EG" : "en-GB", { maximumFractionDigits: 3 });
 
   return <div className="invoice-pricing">
-    {pricing.work.length > 0 && <fieldset className="invoice-price-list">
+    {describedWork.length > 0 && <section className="invoice-price-list" aria-label={t("Work done")}>
+      <h3>{t("Work done")}</h3>
+      <VisitWorkList lang={lang} work={describedWork}/>
+    </section>}
+    {pricedWork.length > 0 && <fieldset className="invoice-price-list">
       <legend>{t("Service prices (EGP)")}</legend>
-      {pricing.work.map(({ service, detail }) => {
+      {pricedWork.map(({ service, detail }) => {
         const name = serviceName(lang, service);
         return <label key={service} className="invoice-price-row">
           <span>{name}{detail && <bdi className="invoice-service-detail">{detail}</bdi>}</span>

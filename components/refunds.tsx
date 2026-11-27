@@ -62,9 +62,9 @@ export async function RefundReceipt({ lang,id,print=false }:{lang:Language;id:st
         <p>{t("Original invoice")} {note.source&&(print?<bdi>{note.source.number}</bdi>:<Ref href={"/record/"+note.source.id}>{note.source.number}</Ref>)}</p>
         {note.status!=="posted"&&<p>{label(lang,note.status)}</p>}
       </header>
-      {note.lines.length>0&&<div className={print?undefined:"table-scroll"}><DocumentTable lang={lang} headers={["Description","Quantity","Physical return","Amount"]}
+      {note.lines.length>0&&<DocumentTable lang={lang} scroll={!print} headers={["Description","Quantity","Physical return","Amount"]}
         rows={note.lines.map((line)=>[isChargeType(line.purpose)?t(chargeLabels[line.purpose]):line.description,line.quantity.isZero()?"—":line.quantity.toFixed(),
-          line.returnDisposition==="restock"?t("Return to sellable inventory"):line.returnDisposition==="damaged"?t("Returned damaged"):t("Financial adjustment only"),amt(line.total)])}/></div>}
+          line.returnDisposition==="restock"?t("Return to sellable inventory"):line.returnDisposition==="damaged"?t("Returned damaged"):t("Financial adjustment only"),amt(line.total)])}/>}
       <dl className="receipt-totals">{[["Credit note total",note.total],["Invoice debt reduction",debtReduced],["Refunds paid",refunded],
         ["Applied customer credit",applied],["Credit retained",retained]].map(([key,value])=><div key={String(key)}><dt>{t(String(key))}</dt><dd>{amt(BigInt(value))}</dd></div>)}</dl>
       {(payouts.length>0||note.creditUses.length>0)&&<div className="page-actions">

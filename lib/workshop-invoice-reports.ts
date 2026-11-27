@@ -2,7 +2,7 @@ import { Prisma } from "@prisma/client";
 import { db } from "./db";
 import { interval, type Filters } from "./views";
 import { cents, extended, units } from "./rules";
-import { workshopCharges, workshopImports } from "./workshop-charges";
+import { storedWorkshopCharge, workshopImports } from "./workshop-charges";
 import { invoiceSettlements } from "./invoice-settlement";
 
 const displayRecord = {
@@ -95,22 +95,20 @@ export async function electricalReport(filters: Filters) {
       ],
     }, select: { ...displayRecord, metadata: true }, orderBy: [{ at: "desc" }, { id: "desc" }] }),
   ]);
-  const grouped = new Map<string, { invoice: typeof lines[number]["document"]; work: bigint; labor: bigint }>();
+  const grouped = new Map<string, { invoice: typeof lines[number]["document"]; labor: bigint }>();
   for (const line of lines) {
-    const row = grouped.get(line.document.id) ?? { invoice: line.document, work: 0n, labor: 0n };
-    if (line.purpose === "electricalWork") row.work += netLine(line);
-    else row.labor += netLine(line);
+    const row = grouped.get(line.document.id) ?? { invoice: line.document, labor: 0n };
+    row.labor += netLine(line);
     grouped.set(line.document.id, row);
   }
   const posted = [...grouped.values()].filter(({ invoice }) => invoice.status === "posted");
   const balances = await invoiceSettlements(posted.map(({ invoice }) => invoice));
   const rows = [...grouped.values()].map((row) => ({ ...row, settlement: balances.get(row.invoice.id) }));
-  const work = rows.reduce((sum, row) => sum + row.work, 0n);
-  const labor = rows.reduce((sum, row) => sum + row.labor, 0n);
+  const total = rows.reduce((sum, row) => sum + row.labor, 0n);
   const pending = jobs.flatMap((job) => {
-    const charges = workshopCharges(job.metadata);
-    return charges.electricalWork || charges.electricalLabor ? [{ job, work: cents(charges.electricalWork), labor: cents(charges.electricalLabor) }] : [];
+    const labor = storedWorkshopCharge(job.metadata, "electricalLabor");
+    return labor > 0n ? [{ job, labor }] : [];
   });
-  return { rows, pending, work, labor, total: work + labor, unassignedCredits: posted.reduce((sum, { invoice }) =>
+  return { rows, pending, total, unassignedCredits: posted.reduce((sum, { invoice }) =>
     sum + invoice.related.reduce((credits, row) => credits + row.total, 0n), 0n) };
 }

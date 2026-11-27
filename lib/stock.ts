@@ -6,6 +6,20 @@ import { part, type Input } from "./masters";
 import { workshopIntake } from "./visit-items";
 
 const zero = new Prisma.Decimal(0);
+const startingQuantityReason = "Starting quantity";
+
+export async function startingQuantity(tx: Pick<Tx, "$queryRaw">, partId: string) {
+  // Legacy Add Product entries used this reason without a separate stock-action audit.
+  const [opening] = await tx.$queryRaw<{ quantity: Prisma.Decimal }[]>`
+    SELECT COALESCE(SUM(m.quantity), 0) AS quantity
+    FROM "StockMovement" m
+    WHERE m."partId"=${partId} AND (m.kind='opening' OR
+      (m.kind='adjustment' AND m.reason=${startingQuantityReason} AND NOT EXISTS (
+        SELECT 1 FROM "Audit" a WHERE a.entity='stockMovement' AND a."entityId"=m.id AND a.action='stock'
+      )))`;
+  return opening.quantity;
+}
+
 export async function move(tx: Tx, actor: Actor, params: {
   partId: string; kind: MovementKind; quantity?: Prisma.Decimal; reserve?: Prisma.Decimal;
   documentId?: string; at?: Date; reason?: string; unitCost?:bigint; totalCost?:bigint;
@@ -26,15 +40,18 @@ export async function move(tx: Tx, actor: Actor, params: {
   return { before:part, after, movement };
 }
 export async function savePart(tx: Tx, input: Input, actor: Actor): Promise<Change> {
-  const quantity = units(text(input.initialQuantity, 20) || "0", true);
+  if (input.initialQuantity === undefined) return part(tx, input);
+  const id = text(input.id, 120);
+  const quantity = units(text(input.initialQuantity, 20) || (id ? "" : "0"), true);
   requireRule(quantity.gte(0), "invalidStartingQuantity");
-  if (quantity.isZero()) return part(tx, input);
+  const saved = await part(tx, input);
+  const difference = id ? quantity.minus(await startingQuantity(tx, id)) : quantity;
+  if (difference.isZero()) return saved;
 
-  requireRule(!text(input.id, 120), "startingQuantityOnCreate");
   requireRule(input.archived !== true, "archiveStock");
-  const created = await part(tx, input);
-  const { after } = await move(tx, actor, { partId: created.id, kind: "adjustment", quantity, reason: "Starting quantity" });
-  return { ...created, after };
+  const { after } = await move(tx, actor, { partId: saved.id, kind: id ? "opening" : "adjustment", quantity: difference,
+    reason: id ? "Starting quantity correction" : startingQuantityReason });
+  return { ...saved, after };
 }
 
 export async function stock(tx: Tx, input: Input, actor: Actor): Promise<Change> {

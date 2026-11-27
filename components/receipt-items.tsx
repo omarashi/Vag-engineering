@@ -27,7 +27,7 @@ export function ReceiptItems({ lang, details, print }: { lang: Language; details
           {carText && <p>{t("Vehicle")} <bdi>{carText}</bdi></p>}
           {released && <p>{t("Allocation released")}</p>}
         </header>
-        <div className={print ? undefined : "table-scroll"}><BillItems lang={lang} bill={document}/></div>
+        <BillItems lang={lang} bill={document} scroll={!print}/>
         <dl className="receipt-totals">
           {paymentType && <div><dt>{t("Payment type")}</dt><dd>{t(paymentType === "Paid" ? "Fully paid" : paymentType)}</dd></div>}
           {followUp ? <div><dt>{t("Balance before payment")}</dt><dd>{amt(before)}</dd></div> : <>

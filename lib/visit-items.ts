@@ -53,6 +53,11 @@ export function isItemizedVisitInvoice(metadata: unknown) {
   return object(metadata).itemizedVisit === true;
 }
 
+export function describedInvoiceWork(metadata: unknown, work: WorkDetail[]) {
+  const { descriptiveServices } = object(metadata);
+  return Array.isArray(descriptiveServices) ? work.filter(({ service }) => descriptiveServices.includes(service)) : [];
+}
+
 export function visitParts(metadata: unknown): VisitPart[] {
   const parts = object(metadata).parts;
   if (!Array.isArray(parts)) return [];

@@ -11,7 +11,7 @@ export const emptyImport: ImportInput = { name: "", supplierId: "", quantity: "1
 
 export function WorkshopBillingFields({ lang, values, suppliers, onChange, showImport = true, selectedCharges = chargeTypes }: {
   lang: Language; values: BillingValues; suppliers?: SupplierOption[]; showImport?: boolean;
-  selectedCharges?: ChargeType[];
+  selectedCharges?: readonly ChargeType[];
   onChange: (key: string, value: boolean | Partial<Record<ChargeType, string>> | ImportInput[]) => void;
 }) {
   const t = (key: string) => translate(lang, key);

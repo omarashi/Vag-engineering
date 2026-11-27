@@ -5,7 +5,7 @@ import Link from "./navigation-link";
 import Form from "next/form";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { translate, type Language } from "@/lib/locale";
 import type { Role } from "@prisma/client";
 import { canViewPage } from "@/lib/permissions";
@@ -57,6 +57,31 @@ export function Shell({ lang, theme, user, children }: {
     : route === "search" ? "" : user.role === "technician" ? "vehicles" : "more";
   const [profile, setProfile] = useState(false);
   const [logoutError, setLogoutError] = useState(false);
+  const topbar = useRef<HTMLElement>(null);
+  const content = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const header = topbar.current;
+    const main = content.current;
+    if (!header || !main) return;
+    const filterSelector = ".toolbar, .log-filters";
+    const elements = Array.from(main.querySelectorAll<HTMLElement>(filterSelector + ", .table-frame"));
+    const alignStickyElements = () => {
+      main.style.setProperty("--log-topbar-height", `${header.getBoundingClientRect().height}px`);
+      const filters: { parent: HTMLElement; height: number }[] = [];
+      for (const element of elements) {
+        const height = filters.reduce((sum, filter) => sum + (filter.parent.contains(element) ? filter.height : 0), 0);
+        element.style.setProperty("--toolbar-stack", `${height}px`);
+        if (element.matches(filterSelector) && element.parentElement) {
+          filters.push({ parent: element.parentElement, height: element.getBoundingClientRect().height });
+        }
+      }
+    };
+    const observer = new ResizeObserver(alignStickyElements);
+    observer.observe(header);
+    for (const element of elements) if (element.matches(filterSelector)) observer.observe(element);
+    alignStickyElements();
+    return () => observer.disconnect();
+  }, [children, pathname]);
   const t = (key: string) => translate(lang, key);
   const initials = user.name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join("");
   async function logout() {
@@ -76,7 +101,7 @@ export function Shell({ lang, theme, user, children }: {
       <nav className="log-nav" aria-label={t("Main navigation")}>{links()}</nav>
     </aside>
     <div className="log-main">
-      <header className="log-topbar">
+      <header className="log-topbar" ref={topbar}>
         <span className="log-route-progress" role="progressbar" aria-label={t("Loading…")}>
           <span className="log-route-sweep" aria-hidden="true">
             <span className="log-route-car">
@@ -99,7 +124,7 @@ export function Shell({ lang, theme, user, children }: {
           </div>
         </div>
       </header>
-      <main id="main-content" className="log-content" key={pathname}>
+      <main id="main-content" className="log-content" ref={content} key={pathname}>
         <div className="log-route-content">{children}</div>
       </main>
     </div>

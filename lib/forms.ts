@@ -80,10 +80,10 @@ export function forms(lang:Language,data:Choices,actor:Actor){
     part:(row:Row={},categories:readonly string[]=[])=>edit("part",row.id?"Edit":"Add part",[
       txt("code",partCodeLabel(lang),true,str(row,"code"),true),txt("name","Name",true,str(row,"name")),
       {key:"category",label:"Category",type:"partCategory",value:str(row,"category"),options:categories.map((name)=>({value:name,name}))},
-      txt("unit","Unit",true,str(row,"unit")||"pc"),txt("oem","OEM number",false,str(row,"oem"),true),txt("brand","Brand",false,str(row,"brand")),
+      txt("unit","Unit",true,str(row,"unit")||"pc"),txt("brand","Brand",false,str(row,"brand")),
       {...txt("location","Location",false,str(row,"location")),wide:!row.id},
-      ...(row.id?[]:[{...txt("initialQuantity","Starting quantity",false,"0",true),inputMode:"decimal" as const,
-        help:"Enter the quantity you already have in the shop."}]),
+      {...txt("initialQuantity","Starting quantity",Boolean(row.id),str(row,"initialQuantity")||"0",true),inputMode:"decimal",
+        help:row.id?undefined:"Enter the quantity you already have in the shop."},
       {...txt("minimum","Minimum",false,str(row,"minimum")||"0",true),inputMode:"decimal",help:"Shows Low stock at this quantity or below."},
       m("cost","Cost",row),m("price","Price",row),memo("note","Notes",str(row,"note")),check("archived","Archived",row.archived===true),
     ],row,"/inventory/$id"),
@@ -176,8 +176,6 @@ export function forms(lang:Language,data:Choices,actor:Actor){
       ...(!row?[choose("partyId","Supplier",supplier,true)]:[]),...(kind==="purchase"?[txt("reference","Supplier invoice number (optional)")]:[]),...dateFields(),memo("note","Notes"),
     ],row?{sourceId:row.id}:{},"/record/$id"),editor:row?undefined:"lines" as const,
       parts:kind==="purchase" && !row && lang==="ar" ? stockOptions(true) : parts,onlyParts:true,purchase:true}),
-    expense:()=>post("expense","New expense",[txt("title","Title",true),expenseCategory(),
-      txt("payee","Payee"),m("amount","Amount",{},true),when(),memo("note","Notes")],{},"/record/$id"),
     paidExpense:(day:string)=>post("paidExpense","Record paid expense",[
       m("amount","Amount",{},true),expenseCategory(),
       payVia,

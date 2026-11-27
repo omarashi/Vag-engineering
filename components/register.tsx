@@ -12,13 +12,14 @@ import { serviceName, serviceTypes } from "@/lib/services";
 import { accountName } from "@/lib/payment-options";
 import { carName } from "@/lib/car-name";
 import { jobModeLabel, visitTitle, workshopIntake } from "@/lib/visit-items";
+import { StickyTable } from "./sticky-table";
 
 export type Cell=ReactNode;
 export function Ref({href,children}:{href:string;children:ReactNode}) { return <Link href={href} className="id-link"><bdi>{children}</bdi></Link>; }
 export function Amt({lang,value}:{lang:Language;value:string|bigint|number|null|undefined}) {return value==null?"—":<bdi>{money(lang,value)}</bdi>;}
 export function Register({lang,head,rows,stickyKey=false}:{lang:Language;head:string[];rows:Cell[][];stickyKey?:boolean}){
-  return rows.length?<div className={"table-scroll"+(stickyKey?" table-sticky-key":"")} tabIndex={0} role="region" aria-label={translate(lang,"Table")}><table><thead><tr>{head.map((name,index)=><th key={index} scope="col">{translate(lang,name)}</th>)}</tr></thead>
-    <tbody>{rows.map((row,index)=><tr key={index}>{row.map((cell,idx)=><td key={idx}>{cell ?? "—"}</td>)}</tr>)}</tbody></table></div>:<Empty lang={lang}/>;
+  return rows.length?<StickyTable lang={lang} stickyKey={stickyKey}><table><thead><tr>{head.map((name,index)=><th key={index} scope="col">{translate(lang,name)}</th>)}</tr></thead>
+    <tbody>{rows.map((row,index)=><tr key={index}>{row.map((cell,idx)=><td key={idx}>{cell ?? "—"}</td>)}</tr>)}</tbody></table></StickyTable>:<Empty lang={lang}/>;
 }
 export function Heading({lang,title,description,children}:{lang:Language;title:string;description?:string;children?:ReactNode}){
   return <header className="page-heading"><div><h1>{translate(lang,title)}</h1>{description&&<p>{description}</p>}</div>{children&&<div className="page-actions">{children}</div>}</header>;
@@ -72,7 +73,13 @@ export function Pages({lang,path,filters,count,report}:{lang:Language;path:strin
 }
 type Doc={id:string;number:string;kind:string;at:Date;dueAt?:Date|null;title?:string;status:string;reference?:string;total:bigint;due?:bigint|null;metadata?:unknown;
   party?:{name:string}|null;employee?:{name:string}|null;vehicle?:{make:string;model:string;color:string;plate:string}|null;category?:string};
-export function DocRegister({lang,docs,mode="financial"}:{lang:Language;docs:Doc[];mode?:"financial"|"jobs"}){
+export function documentBadgeValue(row:Pick<Doc,"kind"|"status"|"total"|"due">){
+  if(row.kind!=="expense" || row.status!=="posted" || row.due==null)return row.status;
+  const due=BigInt(row.due);
+  return due===0n?"expensePaid":due<BigInt(row.total)?"partial":"unpaid";
+}
+
+export function DocRegister({lang,docs,mode="financial",showSupplierInvoice=false,showDue=true}:{lang:Language;docs:Doc[];mode?:"financial"|"jobs";showSupplierInvoice?:boolean;showDue?:boolean}){
   const tr=(name:string)=>translate(lang,name);
   if(mode==="jobs")return docs.length ? <ul className="log-list">{docs.map((row)=>{
     const related=[row.party?.name,row.vehicle && carName(row.vehicle),row.vehicle?.plate].filter(Boolean).join(" · ");
@@ -86,10 +93,14 @@ export function DocRegister({lang,docs,mode="financial"}:{lang:Language;docs:Doc
       <Badge lang={lang} value={row.status}/>
     </Link></li>;
   })}</ul> : <Empty lang={lang}/>;
-  return <Register lang={lang} head={["Number","Type","Date","Name","Status","Total","Amount due","Due date"]} rows={docs.map((row)=>[
-    <Ref href={"/record/"+row.id}>{row.number}</Ref>,label(lang,row.kind),day(lang,row.at),<bdi>{row.party?.name || row.employee?.name || row.title || row.reference}</bdi>,
-    <Badge lang={lang} value={row.status}/>,<Amt lang={lang} value={row.total}/>,<Amt lang={lang} value={row.due}/>,
-    row.dueAt?<span className={BigInt(row.due ?? 0)>0n&&new Date(row.dueAt)<new Date()?"text-red-400":""}>{day(lang,row.dueAt)}{BigInt(row.due??0)>0n&&new Date(row.dueAt)<new Date()&&" · "+tr("Overdue")}</span>:"—",
+  return <Register lang={lang} head={["Number",...(showSupplierInvoice?["Supplier invoice number"]:[]),"Type","Date","Name","Status","Total",...(showDue?["Amount due","Due date"]:[])]} rows={docs.map((row)=>[
+    <Ref href={"/record/"+row.id}>{row.number}</Ref>,
+    ...(showSupplierInvoice?[row.kind==="purchase"&&row.reference?<Ref href={"/record/"+row.id}>{row.reference}</Ref>:null]:[]),
+    label(lang,row.kind),day(lang,row.at),<bdi>{row.party?.name || row.employee?.name || row.title || row.reference}</bdi>,
+    <Badge lang={lang} value={documentBadgeValue(row)}/>,<Amt lang={lang} value={row.total}/>,
+    ...(showDue?[<Amt lang={lang} value={row.due}/>,
+      row.dueAt?<span className={BigInt(row.due ?? 0)>0n&&new Date(row.dueAt)<new Date()?"text-red-400":""}>{day(lang,row.dueAt)}{BigInt(row.due??0)>0n&&new Date(row.dueAt)<new Date()&&" · "+tr("Overdue")}</span>:"—",
+    ]:[]),
   ])}/>;
 }
 type Pay={id:string;number:string;kind:string;at:Date;amount:bigint;party?:{name:string}|null;employee?:{name:string}|null;

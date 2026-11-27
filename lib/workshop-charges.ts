@@ -1,4 +1,5 @@
 import { divideHalfUp, normalize, parseMoney } from "./decimal-input";
+import { moneyInput } from "./locale";
 
 export const chargeLabels = {
   generalLabor: "General labor",
@@ -6,9 +7,13 @@ export const chargeLabels = {
   electricalLabor: "Electrical labor",
 } as const;
 
-export type ChargeType = keyof typeof chargeLabels;
-export const chargeTypes = Object.keys(chargeLabels) as ChargeType[];
-export const billingServiceLabels = { ...chargeLabels, importedItem: "Import" } as const;
+export const chargeTypes = ["generalLabor", "electricalLabor"] as const;
+export type ChargeType = typeof chargeTypes[number];
+export const billingServiceLabels = {
+  generalLabor: chargeLabels.generalLabor,
+  electricalLabor: chargeLabels.electricalLabor,
+  importedItem: "Import",
+} as const;
 export type BillingService = keyof typeof billingServiceLabels;
 export const billingServices = Object.keys(billingServiceLabels) as BillingService[];
 
@@ -26,17 +31,34 @@ export function workshopMetadata(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-export function workshopCharges(metadata: unknown): Partial<Record<ChargeType, string>> {
+export function workshopChargeInputs(charges: Record<string, unknown>, type: ChargeType) {
+  return type === "electricalLabor" ? [charges.electricalLabor, charges.electricalWork] : [charges[type]];
+}
+
+export function storedWorkshopCharge(metadata: unknown, type: ChargeType) {
   const charges = workshopMetadata(workshopMetadata(metadata).workshopCharges);
+  return workshopChargeInputs(charges, type).reduce<bigint>((sum, raw) => {
+    const amount = typeof raw === "string" ? parseMoney(raw) ?? 0n : 0n;
+    return amount > 0n ? sum + amount : sum;
+  }, 0n);
+}
+
+export function workshopCharges(metadata: unknown): Partial<Record<ChargeType, string>> {
   return Object.fromEntries(chargeTypes.flatMap((type) => {
-    const raw = charges[type];
-    return typeof raw === "string" && (parseMoney(raw) ?? 0n) > 0n ? [[type, raw]] : [];
+    const total = storedWorkshopCharge(metadata, type);
+    return total > 0n ? [[type, moneyInput(total)]] : [];
   }));
+}
+
+export function normalizeBillingService(value: unknown) {
+  return value === "electricalWork" ? "electricalLabor" : value;
 }
 
 export function savedBillingSelection(metadata: unknown): BillingService[] | null {
   const selection = workshopMetadata(metadata).workshopBillingSelection;
-  return Array.isArray(selection) ? billingServices.filter((service) => selection.includes(service)) : null;
+  if (!Array.isArray(selection)) return null;
+  const normalized = selection.map(normalizeBillingService);
+  return billingServices.filter((service) => normalized.includes(service));
 }
 
 export function billingSelection(metadata: unknown): BillingService[] {
@@ -54,7 +76,7 @@ export function workshopImports(metadata: unknown): ImportItem[] {
   });
 }
 
-export function isChargeType(value: string | null | undefined): value is ChargeType {
+export function isChargeType(value: string | null | undefined): value is keyof typeof chargeLabels {
   return value != null && Object.hasOwn(chargeLabels, value);
 }
 

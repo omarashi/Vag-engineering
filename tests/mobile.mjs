@@ -40,7 +40,7 @@ try{
     ]);
     for(const width of [320,375,390,414,768]){
       await page.setViewportSize({width,height:900});
-      for(const path of ["/cash","/payroll","/inventory","/jobs"]){
+      for(const path of ["/cash","/expenses","/payroll","/inventory","/jobs"]){
         const response=await page.goto(base+path);
         assert.equal(response.status(),200,path);
         const layout=await page.evaluate(()=>({
@@ -106,11 +106,19 @@ try{
     await dialog.getByRole("button",{name:"Close",exact:true}).click();
   }
 
-  for(const [path,title,field,value] of [["/cash","Record paid expense","amount","123"],["/jobs","New job","receivedBy",employee]]){
+  for(const [path,title,field,value] of [["/expenses","Record paid expense","amount","123"],["/jobs","New job","receivedBy",employee]]){
     await page.goto(base+path);
+    if(path==="/expenses"){
+      await page.getByRole("link",{name:"This week",exact:true}).click();
+      await page.waitForURL((url)=>url.searchParams.get("from")!==url.searchParams.get("to"));
+      const dates = new URL(page.url()).searchParams;
+      assert.equal(Date.parse(dates.get("to"))-Date.parse(dates.get("from")),6*86400000);
+      await page.getByRole("link",{name:"Today",exact:true}).click();
+      await page.waitForURL((url)=>url.searchParams.has("from") && url.searchParams.get("from")===url.searchParams.get("to"));
+    }
     await page.getByRole("button",{name:title,exact:true}).click();
     const modal=page.getByRole("dialog",{name:title,exact:true});
-    if(path==="/cash"){
+    if(path==="/expenses"){
       const channel=modal.getByRole("combobox",{name:"Pay via",exact:true});
       assert.equal(await channel.getAttribute("name"),"paymentChannel");
       assert.equal(await modal.locator('select[name="accountId"],select[name="method"]').count(),0);

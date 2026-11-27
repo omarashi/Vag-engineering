@@ -9,7 +9,7 @@ import { translate, type Language } from "@/lib/locale";
 import { visitById } from "@/lib/visits";
 import { workshopIntake } from "@/lib/visit-items";
 import { Dashboard } from "./dashboard";
-import { Audit, Balances, Cash, CashTransactions, Inventory, Invoices, Opening, Purchasing, Reports, Settings, Workshop, type Query } from "./modules";
+import { Audit, Balances, Cash, CashTransactions, Expenses, Inventory, Invoices, Opening, Purchasing, Reports, Settings, Workshop, type Query } from "./modules";
 import { PartView, PartyView, PaymentView, RecordView } from "./records";
 import { EmployeeView, Payroll } from "./payroll";
 import { Actions, Heading, Pages, PayRegister, Toolbar } from "./register";
@@ -27,10 +27,10 @@ const sections = [
   { title: "Workshop and sales", tools: [
     ["invoices", "Invoices", FileText],
     ["receipts", "Receipts", Receipt], ["vehicles", "Cars", CarFront], ["inventory", "Inventory", Package], ["purchasing", "Suppliers & purchasing", Truck],
-    ["imports", "Imports", Truck], ["electrical-work", "Electrical work", Zap], ["refunds", "Refund / Return", Receipt],
+    ["imports", "Imports", Truck], ["electrical-work", "Electrical labor", Zap], ["refunds", "Refund / Return", Receipt],
   ] },
   { title: "Money and people", tools: [
-    ["balances", "Balances & credits", Landmark], ["cash", "Cash & expenses", Wallet], ["payroll", "Employees & payroll", UsersRound],
+    ["balances", "Balances & credits", Landmark], ["cash", "Cashbook", Wallet], ["expenses", "Expenses", Receipt], ["payroll", "Employees & payroll", UsersRound],
     ["business", "Business overview", ChartNoAxesCombined], ["reports", "Reports", FileText],
   ] },
   { title: "Administration", tools: [
@@ -91,6 +91,10 @@ export async function OfficePage({ lang, route, id, actor, query }: { lang: Lang
     if (!can(actor.role, "account")) notFound();
     redirect("/settings?new=account");
   }
+  if (route === "cash" && !id && (query.new === "expense" || query.new === "paidExpense")) {
+    const dates = new URLSearchParams({ new: query.new, from: query.from ?? query.date ?? "", to: query.to ?? query.date ?? "" });
+    redirect("/expenses?" + dates);
+  }
   if (route === "business" && !id) return <Dashboard lang={lang} data={await overview()}/>;
   if (route === "jobs") {
     if (id === "billing" && !can(actor.role, "visitReceipt")) notFound();
@@ -126,6 +130,7 @@ export async function OfficePage({ lang, route, id, actor, query }: { lang: Lang
     case "electrical-work": return <ElectricalWork {...props}/>;
     case "balances": return <Balances {...props}/>;
     case "cash": return <Cash {...props}/>;
+    case "expenses": return <Expenses {...props}/>;
     case "payroll": return <Payroll {...props}/>;
     case "reports": return <Reports {...props}/>;
     case "opening": return <Opening {...props}/>;

@@ -40,12 +40,14 @@ try {
   const vehicleId = await save("vehicle", { partyId, make: "Audi", model: "A3" });
   const name = "Audi A3 electronic module " + suffix;
   const importItems = [{ name, supplierId, quantity: "1", buyingPrice: "1400", sellingPrice: "3500" }];
-  const intake = { partyId, vehicleId, jobMode: "quick", at, receivedBy: "QA employee", services: ["maintenance"], importRequested: true };
+  const intake = { partyId, vehicleId, jobMode: "quick", at, receivedBy: "QA employee", services: ["maintenance", "other"], importRequested: true };
   assert.equal((await postAction(base, technician, "jobIntake", { ...intake, importItems })).status, 403);
   const stockBefore = await db.part.count();
 
   const visitId = await save("jobIntake", { ...intake, workshopCharges: { generalLabor: "1500", electricalWork: "2500", electricalLabor: "1200" },
     importItems: [...importItems, { ...importItems[0], name: "Removed item " + suffix }] });
+  assert.deepEqual((await db.document.findUniqueOrThrow({ where: { id: visitId } })).metadata.workshopCharges,
+    { generalLabor: "1500.00", electricalLabor: "3700.00" });
   const draftReport = await html("/imports?party=" + supplierId);
   assert.ok(draftReport.includes(name) && draftReport.includes("Recorded"));
   assert.ok((await html("/electrical-work?vehicle=" + vehicleId)).includes("Work orders awaiting invoice"));
@@ -55,13 +57,14 @@ try {
 
   const account = await db.moneyAccount.findFirstOrThrow({ where: { kind: "cash", archived: false } });
   const key = randomUUID();
-  const checkout = { visitId, visitVersion: 1, at, accountId: account.id, amount: "4000", servicePrices: { maintenance: "1000" },
+  const checkout = { visitId, visitVersion: 1, at, accountId: account.id, amount: "4000", servicePrices: { other: "1000" },
     workshopCharges: { generalLabor: "1500", electricalWork: "2500", electricalLabor: "1500" } };
   const receiptId = await save("visitReceipt", checkout, key);
   assert.equal(await save("visitReceipt", checkout, key), receiptId);
   const invoice = await db.document.findFirstOrThrow({ where: { sourceId: visitId, kind: "invoice" }, include: { lines: { orderBy: { position: "asc" } } } });
   assert.equal(invoice.total, 1_000_000n);
-  assert.deepEqual(invoice.lines.map((line) => line.purpose), [null, "importedItem", "generalLabor", "electricalWork", "electricalLabor"]);
+  assert.deepEqual(invoice.lines.map((line) => line.purpose), [null, "importedItem", "generalLabor", "electricalLabor"]);
+  assert.equal(invoice.lines[3].total, 400000n);
   const item = invoice.lines[1];
   assert.deepEqual([item.description, item.supplierId, item.supplierName, item.buyingPrice, item.costTotal, item.total, item.partId],
     [name, supplierId, supplierName, 140000n, 140000n, 350000n, null]);
@@ -80,14 +83,21 @@ try {
   assert.doesNotMatch(await html(customerReceipt), /<dt>(?:Total|Paid)<\/dt>/);
   assert.match(await html(customerReceipt), /Payment type<\/dt><dd>On credit<\/dd>/);
   const printed = await html(printable);
+  assert.ok(printed.includes("<td><bdi>Import</bdi></td>"));
   assert.ok(printed.indexOf(name) < printed.indexOf("General labor"));
   assert.ok(printed.indexOf("Electrical labor") < printed.indexOf("Invoice total"));
+  assert.ok(!printed.includes("Electrical work"));
   assert.ok(!printed.includes(supplierName) && !printed.includes("importedItem"));
-  const arabic = await html(printable.replace("lang=en", "lang=ar"));
-  assert.ok(arabic.includes("مصنعيات كهرباء") && arabic.includes("المتبقي"));
+  for (const path of [printable, customerReceipt]) {
+    const arabic = await html(path.replace("lang=en", "lang=ar"));
+    assert.ok(arabic.includes("مصنعيات كهرباء") && arabic.includes("المتبقي"));
+    assert.ok(arabic.includes("<td><bdi>استيراد</bdi></td>"));
+    assert.ok(arabic.includes("<td><bdi>أجر العمال</bdi></td>"));
+    assert.ok(!arabic.includes(supplierName) && !arabic.includes("importedItem"));
+  }
 
   const laterVisit = await save("jobIntake", { ...intake, importRequested: false });
-  const laterInvoice = await save("visitInvoice", { visitId: laterVisit, at, servicePrices: { maintenance: "750" } });
+  const laterInvoice = await save("visitInvoice", { visitId: laterVisit, at, servicePrices: { other: "750" } });
   const collect = (amount) => save("payment", { kind: "receipt", invoiceId: invoice.id, amount, at, accountId: account.id });
   const secondReceipt = await collect("3000");
   moneyRow(await html(printable), "Remaining balance", "3,000.00");
@@ -103,7 +113,7 @@ try {
   const lineCredit = (line, amount) => save("credit", { sourceId: invoice.id, at, reason: "Billing QA adjustment",
     lines: [{ sourceId: line.id, amount, disposition: "none" }] });
   const electricalCredit = await lineCredit(electrical, "600");
-  assert.equal((await db.line.findFirstOrThrow({ where: { documentId: electricalCredit } })).purpose, "electricalWork");
+  assert.equal((await db.line.findFirstOrThrow({ where: { documentId: electricalCredit } })).purpose, "electricalLabor");
   moneyRow(await html(printable), "Remaining balance", "2,400.00");
   const finalReceipt = await collect("2400");
   const finalPrint = await html("/print/payment/" + finalReceipt + "?lang=en");
@@ -128,16 +138,17 @@ try {
   assert.match(imported, /Gross profit<\/small><b><bdi>EGP\s*1,600\.00/);
   const electricalPage = await html("/electrical-work?vehicle=" + vehicleId + "&from=" + at + "&to=" + at);
   assert.equal((electricalPage.match(new RegExp('<a\\b[^>]*\\bhref="/record/' + invoice.id + '"', "g")) ?? []).length, 1);
-  assert.match(electricalPage, /Combined electrical charges<\/small><b><bdi>EGP\s*3,400\.00/);
+  moneyRow(electricalPage, "Electrical labor", "3,400.00");
+  assert.doesNotMatch(electricalPage, /<th\b[^>]*>Electrical work<\/th>/);
   assert.ok(!electricalPage.includes('/record/' + laterInvoice));
   await html("/imports", technician, 404);
   await html("/electrical-work", technician, 404);
   assert.equal((await postAction(base, owner, "jobIntake", { ...intake, id: visitId, version: 2, importItems })).status, 409);
 
   const reversable = await save("jobIntake", { ...intake, importRequested: false, workshopCharges: { electricalLabor: "25" } });
-  const reversed = await save("visitInvoice", { visitId: reversable, at, servicePrices: { maintenance: "0" } });
+  const reversed = await save("visitInvoice", { visitId: reversable, at, servicePrices: { other: "0" } });
   await save("reverseDocument", { id: reversed, at, reason: "Invoice reversal QA" });
-  assert.match(await html("/electrical-work?vehicle=" + vehicleId), /Combined electrical charges<\/small><b><bdi>EGP\s*3,400\.00/);
+  moneyRow(await html("/electrical-work?vehicle=" + vehicleId), "Electrical labor", "3,400.00");
   const cancelled = await save("jobIntake", { ...intake, jobMode: "stay", importItems });
   await save("jobUpdate", { id: cancelled, version: 0, status: "cancelled", reason: "Draft import cancelled" });
   assert.equal((await postAction(base, owner, "visitInvoice", { visitId: cancelled, at })).status, 422);
@@ -148,16 +159,36 @@ try {
   assert.equal((await postAction(base, owner, "jobIntake", { ...checklist, importRequested })).status, 422);
   const unpriced = await save("jobIntake", checklist);
   const saved = await db.document.findUniqueOrThrow({ where: { id: unpriced } });
-  assert.deepEqual(saved.metadata.workshopBillingSelection, services);
+  assert.deepEqual(saved.metadata.workshopBillingSelection, ["generalLabor", "electricalLabor", "importedItem"]);
   assert.deepEqual(saved.metadata.workshopCharges, {});
   assert.deepEqual(saved.metadata.importItems, []);
   assert.equal((await postAction(base, owner, "visitInvoice", { visitId: unpriced, at })).status, 422);
   assert.equal((await postAction(base, owner, "visitInvoice", { visitId: unpriced, at,
     workshopCharges: { generalLabor: "100", electricalWork: "100", electricalLabor: "0" } })).status, 422);
   await save("jobIntake", { ...checklist, id: unpriced, version: 0, services: ["electricalLabor"] });
-  const laborOnly = await save("visitInvoice", { visitId: unpriced, at, workshopCharges: { electricalLabor: "100" } });
+  const draft = await db.document.findUniqueOrThrow({ where: { id: unpriced } });
+  // Simulate an unbilled work order saved before the categories were merged.
+  await db.document.update({ where: { id: unpriced }, data: { metadata: {
+    ...draft.metadata, workshopBillingSelection: ["electricalWork", "electricalLabor"],
+    workshopCharges: { electricalWork: "40.25", electricalLabor: "59.75" },
+  } } });
+  const laborOnly = await save("visitInvoice", { visitId: unpriced, at });
   const laborLines = await db.line.findMany({ where: { documentId: laborOnly } });
   assert.deepEqual(laborLines.map(({ purpose, total }) => [purpose, total]), [["electricalLabor", 10000n]]);
+  // Model the original line split on a historical posted invoice.
+  const [laborLine] = laborLines;
+  const [legacyWork] = await db.$transaction([
+    db.line.create({ data: { documentId: laborOnly, purpose: "electricalWork", kind: "service",
+      description: "Electrical work", price: 4025n, total: 4025n, quantity: 1, position: laborLine.position + 1 } }),
+    db.line.update({ where: { id: laborLine.id }, data: { price: 5975n, total: 5975n } }),
+  ]);
+  await save("credit", { sourceId: laborOnly, at, reason: "Historical electrical adjustment",
+    lines: [{ sourceId: legacyWork.id, amount: "10", disposition: "none" }] });
+  const history = await db.document.findUniqueOrThrow({ where: { id: laborOnly } });
+  const historicalReport = await html("/electrical-work?" + new URLSearchParams({ q: history.number }));
+  moneyRow(historicalReport, "Electrical labor", "90.00");
+  assert.equal((historicalReport.match(new RegExp('<a\\b[^>]*\\bhref="/record/' + laborOnly + '"', "g")) ?? []).length, 1);
+  assert.ok((await html("/print/record/" + laborOnly + "?lang=en")).includes("Electrical work"));
 
   const receiver = "Billing receiver " + suffix;
   await save("employee", { name: receiver, startedAt: at });
@@ -192,33 +223,40 @@ try {
     await newJob.getByLabel("Received by").selectOption(receiver);
     await newJob.getByLabel("Date received").fill(at);
     const serviceList = newJob.getByRole("group", { name: "Services" });
-    for (const name of ["Routine maintenance", "General labor", "Electrical work", "Import"]) {
+    for (const name of ["Routine maintenance", "Dyno", "General labor", "Electrical labor", "Import"]) {
       await serviceList.getByRole("checkbox", { name, exact: true }).check();
     }
-    assert.ok(await serviceList.getByRole("checkbox", { name: "Electrical labor", exact: true }).isVisible());
+    assert.equal(await serviceList.getByRole("checkbox", { name: "Electrical work", exact: true }).count(), 0);
     assert.equal(await newJob.locator('input[name="generalLabor"], input[name="electricalWork"], input[name="electricalLabor"]').count(), 0);
     assert.equal(await newJob.getByLabel("Details for Import").count(), 0);
     assert.equal(await newJob.getByLabel("Buying price", { exact: true }).count(), 0);
     await newJob.getByRole("button", { name: "Save and take payment" }).click();
     const editor = page.getByRole("dialog", { name: "Create invoice and take payment" });
-    await editor.getByLabel("Price for Routine maintenance").fill("200");
-    await editor.getByLabel("General labor", { exact: true }).fill("100");
-    await editor.getByLabel("Electrical work", { exact: true }).fill("100");
-    assert.equal(await editor.getByLabel("Electrical labor", { exact: true }).count(), 0);
+    await editor.getByRole("region", { name: "Work done" }).getByText("Routine maintenance", { exact: true }).waitFor();
+    assert.equal(await editor.getByLabel("Price for Routine maintenance").count(), 0);
+    await editor.getByLabel("Price for Dyno", { exact: true }).fill("250");
+    await editor.getByLabel("General labor", { exact: true }).fill("300");
+    await editor.getByLabel("Electrical labor", { exact: true }).fill("100");
+    assert.equal(await editor.getByLabel("Electrical work", { exact: true }).count(), 0);
     assert.equal(await editor.getByRole("checkbox", { name: "Import", exact: true }).count(), 0);
     await editor.getByRole("button", { name: "Add imported item" }).click();
     await editor.getByLabel("Product name").fill("Mobile import " + suffix);
     await editor.getByRole("group", { name: "Imported items" }).getByRole("combobox").selectOption(supplierId);
     await editor.getByLabel("Buying price", { exact: true }).fill("1400");
     await editor.getByLabel("Selling price", { exact: true }).fill("3500");
-    assert.match(await editor.locator("output").textContent(), /3,900\.00/);
+    assert.match(await editor.locator("output").textContent(), /4,150\.00/);
     const phoneJob = new URL(page.url()).pathname.split("/").at(-1);
-    await editor.getByLabel("Amount paid (EGP)").fill("3900");
+    await editor.getByLabel("Amount paid (EGP)").fill("4150");
     await editor.getByLabel("Receive payment via").selectOption({ index: 1 });
     await editor.getByRole("button", { name: "Save invoice and receipt" }).click();
     await page.waitForURL((url) => url.pathname.startsWith("/payment/"));
     const mobileInvoice = await db.document.findFirstOrThrow({ where: { sourceId: phoneJob, kind: "invoice" } });
-    assert.equal(mobileInvoice.total, 390000n);
+    assert.equal(mobileInvoice.total, 415000n);
+    const dyno = await db.line.findFirstOrThrow({ where: { documentId: mobileInvoice.id, description: "Dyno" } });
+    assert.deepEqual([dyno.kind, dyno.total], ["service", 25000n]);
+    const receiptUrl = "/print" + new URL(page.url()).pathname;
+    assert.match(await html(receiptUrl + "?lang=en"), /<span>Dyno<\/span>/);
+    assert.match(await html(receiptUrl + "?lang=ar"), /<span>دينو<\/span>/);
   } finally {
     await browser.close();
   }

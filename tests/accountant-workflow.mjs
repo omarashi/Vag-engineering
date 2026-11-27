@@ -61,6 +61,10 @@ try {
   assert.equal(expense.allocations[0].payment.method,"cash");
   const {id:expensePayment} = expense.allocations[0].payment;
   assert.equal(await db.cashMovement.count({where:{paymentId:expensePayment,accountId,amount:-5000n}}),1);
+  const arabicAccountant=accountant+"; vag-lang=ar";
+  const expenseDay="/expenses?from="+tuesday+"&to="+tuesday+"&category=Supplies";
+  assert.match(await page(arabicAccountant,expenseDay),/<i><\/i>خالص<\/span>/);
+  assert.match(await page(arabicAccountant,"/record/"+expenseId),/<i><\/i>خالص<\/span>/);
   const {id:partyId} = await post(owner,"customer",{name:"Card QA "+suffix});
   const cardReceipt={kind:"receipt",partyId,at:tuesday,amount:"200",allowCredit:true};
   assert.equal((await post(accountant,"payment",{...cardReceipt,receiptDestination:"cash:"+terminal.id},undefined,422)).error,"invalidAccount");
@@ -81,6 +85,8 @@ try {
   assert.match(previous,/Daily cashbook/);
   assert.match(previous,/950\.00/);
   assert.doesNotMatch(previous,/Payment reversal/);
+  assert.doesNotMatch(previous,/Expense records|Record paid expense|New expense/);
+  assert.match(previous,/href="\/expenses\?from=2025-11-25&amp;to=2025-11-25"/);
   const following = await page(accountant,"/cash?date="+wednesday+"&account="+accountId);
   assert.match(following,/Payment reversal/);
   assert.match(following,/1,000\.00/);
@@ -90,9 +96,36 @@ try {
   await page(technician,"/api/export?report=payments",403);
   assert.ok(await db.audit.findFirst({where:{action:"export",entity:"report",entityId:"payments"}}));
   const expenseFilters="&from="+tuesday+"&to="+tuesday+"&category=Supplies";
-  assert.match(await page(accountant,"/reports?report=expenses"+expenseFilters),new RegExp(expense.number));
+  const expenseReport=await page(accountant,"/reports?report=expenses"+expenseFilters);
+  assert.match(expenseReport,new RegExp(expense.number));
+  assert.doesNotMatch(expenseReport,/<th[^>]*>(?:Amount due|Due date)<\/th>/);
   assert.match(await page(accountant,"/api/export?report=expenses"+expenseFilters),new RegExp(expense.number));
   assert.doesNotMatch(await page(accountant,"/api/export?report=expenses&from="+wednesday+"&to="+wednesday),new RegExp(expense.number));
+  const {id:unpaidExpense} = await post(accountant,"expense",{at:monday,category:"Supplies",title:"Expense for next payment "+suffix,amount:"25.25"});
+  const {id:voidExpense} = await post(accountant,"expense",{at:tuesday,category:"Supplies",title:"Reversed expense "+suffix,amount:"900"});
+  await post(accountant,"reverseDocument",{id:voidExpense,at:wednesday,reason:"Correct the expense register"});
+  const reversedExpenseDay=await page(arabicAccountant,expenseDay);
+  assert.match(reversedExpenseDay,/<i><\/i>غير مدفوع<\/span>/);
+  assert.match(reversedExpenseDay,/<i><\/i>معكوس<\/span>/);
+  assert.doesNotMatch(reversedExpenseDay,/<i><\/i>خالص<\/span>/);
+  const dayExpenses=await page(accountant,"/expenses?"+expenseFilters.slice(1));
+  assert.match(dayExpenses,/Record paid expense/);
+  assert.doesNotMatch(dayExpenses,/New expense/);
+  assert.doesNotMatch(dayExpenses,/<th[^>]*>(?:Amount due|Due date)<\/th>/);
+  assert.match(dayExpenses,/Total posted expenses<\/dt><dd><bdi>EGP\s*50\.00/);
+  assert.match(dayExpenses,new RegExp("/record/"+expenseId));
+  assert.match(dayExpenses,new RegExp("/record/"+voidExpense));
+  assert.doesNotMatch(dayExpenses,new RegExp("/record/"+unpaidExpense));
+  const weekExpenses="/expenses?from=2025-11-23&to="+saturday+"&category=Supplies";
+  assert.match(await page(accountant,weekExpenses),/Total posted expenses<\/dt><dd><bdi>EGP\s*75\.25/);
+  assert.match(await page(accountant,weekExpenses+"&page=1"),/Total posted expenses<\/dt><dd><bdi>EGP\s*75\.25/);
+  assert.match(await page(accountant+"; vag-lang=ar",weekExpenses),/إجمالي المصاريف المسجّلة/);
+  const more = await page(accountant,"/more");
+  assert.match(more,/href="\/cash"[^>]*>/);
+  assert.match(more,/href="\/expenses"[^>]*>/);
+  const oldExpenseLink=await fetch(base+"/cash?new=paidExpense&date="+tuesday,{headers:{Cookie:accountant},redirect:"manual"});
+  assert.equal(oldExpenseLink.status,307);
+  assert.equal(oldExpenseLink.headers.get("location"),"/expenses?new=paidExpense&from="+tuesday+"&to="+tuesday);
   const customMethod = "Deposit: branch " + suffix;
   const {id:catalogId} = await post(owner,"catalogue",{group:"paymentMethod",name:customMethod});
   const contribution={kind:"contribution",at:wednesday,paymentChannel:customMethod+":"+visaId,amount:"40",note:"Contribution QA"};
@@ -104,6 +137,7 @@ try {
   await post(accountant,"expense",{title:null,category:"Test",amount:"10"},undefined,422);
   await post(accountant,"expense",{title:"x".repeat(181),category:"Test",amount:"10"},undefined,422);
   await page(technician,"/cash",404);
+  await page(technician,"/expenses",404);
 
   const {id:employeeId} = await post(owner,"employee",{name:"Payroll QA "+suffix,startedAt:"2025-11-01",weeklySalary:"3000"});
   const half = {employeeId,day:monday,action:"halfDay"};
@@ -203,11 +237,10 @@ try {
   const stockedPart = await db.part.findUniqueOrThrow({where:{id:partId},include:{movements:true}});
   assert.equal(stockedPart.onHand.toFixed(),"10");
   assert.deepEqual(stockedPart.movements.map(({kind,quantity,totalCost})=>[kind,quantity.toFixed(),totalCost]),[["adjustment","10",100000n]]);
-  assert.equal((await post(owner,"part",{...newPart,id:partId,version:stockedPart.version},undefined,422)).error,"startingQuantityOnCreate");
   assert.equal((await post(owner,"part",{...newPart,code:"INVALID-"+suffix,initialQuantity:"-1"},undefined,422)).error,"invalidStartingQuantity");
   assert.equal(await db.part.count({where:{code:"INVALID-"+suffix}}),0);
-  const {id:otherPart}=await post(owner,"part",{name:"Other valuation fixture",code:"OTHER-"+suffix,cost:"200",price:"300"});
-  await post(owner,"stock",{partId:otherPart,kind:"adjustment",quantity:"1",reason:"Warehouse total fixture"});
+  const {id:otherPart}=await post(owner,"part",{name:"Other valuation fixture",code:"OTHER-"+suffix,cost:"200",price:"300",oem:"OEM-"+suffix});
+  await post(owner,"stock",{partId:otherPart,kind:"adjustment",quantity:"1",reason:"Starting quantity"});
   const {id:vehicleId} = await post(owner,"vehicle",{partyId,make:"VW",model:"Golf"});
   const {id:reserveJobId} = await post(technician,"job",{partyId,vehicleId,title:"Reserve QA "+suffix});
   await db.$transaction([
@@ -230,7 +263,11 @@ try {
   assert.match(inventory,/Total selling value/);
   assert.match(inventory,/1,000\.00/);
   assert.match(inventory,/1,500\.00/);
+  assert.match(inventory,/<th scope="col">Potential gross profit<\/th>/);
+  assert.match(inventory,/1,500\.00<\/bdi><\/td><td><bdi>EGP\s*500\.00/);
   assert.match(inventory,/All stock values[\s\S]*1,200\.00[\s\S]*Filtered stock values[\s\S]*1,000\.00/);
+  const profitTotals=[...inventory.matchAll(/<dt>Total potential gross profit<\/dt><dd><bdi>EGP\s*([^<]+)<\/bdi><\/dd>/g)];
+  assert.deepEqual(profitTotals.map(([,amount])=>amount),["600.00","500.00"]);
   const laterPage=await page(accountant,"/inventory?page=2&q="+suffix+"&category=Reconciliation");
   assert.match(laterPage,/Filtered stock values[\s\S]*1,000\.00/);
   assert.match(await page(accountant,"/inventory?page=2&q=nomatch"),/All stock values/);
@@ -239,6 +276,32 @@ try {
   }))});
   const filteredPage=await page(accountant,"/inventory?category=Bulk+valuation&page=1");
   assert.match(filteredPage,/Filtered stock values[\s\S]*102\.01[\s\S]*152\.51/);
+
+  const {id:saleId}=await post(owner,"invoice",{partyId,at:monday,
+    lines:[{kind:"part",partId,quantity:"3",price:"150"}]});
+  const beforeCorrection=await db.part.findUniqueOrThrow({where:{id:partId},include:{movements:true}});
+  assert.equal(beforeCorrection.onHand.toFixed(),"7");
+  const correction={...newPart,id:partId,version:beforeCorrection.version,initialQuantity:"15"};
+  const correctionKey=randomUUID();
+  await post(technician,"part",correction,undefined,403);
+  await post(accountant,"part",correction,correctionKey);
+  await post(accountant,"part",correction,correctionKey);
+  const corrected=await db.part.findUniqueOrThrow({where:{id:partId},include:{movements:true}});
+  assert.equal(corrected.onHand.toFixed(),"12");
+  assert.equal(corrected.movements.length,beforeCorrection.movements.length+1);
+  assert.ok(beforeCorrection.movements.some((movement)=>movement.documentId===saleId));
+  for (const movement of beforeCorrection.movements) {
+    assert.deepEqual(corrected.movements.find((item)=>item.id===movement.id),movement);
+  }
+  assert.equal((await post(accountant,"part",{...correction,initialQuantity:"1",version:corrected.version},undefined,409)).error,"stockConflict");
+  const reduced={...correction,initialQuantity:"13.5",version:corrected.version};
+  await post(accountant,"part",reduced);
+  assert.equal((await db.part.findUniqueOrThrow({where:{id:partId}})).onHand.toFixed(),"10.5");
+  const other=await db.part.findUniqueOrThrow({where:{id:otherPart}});
+  await post(accountant,"part",{id:other.id,version:other.version,name:other.name,code:other.code,cost:"200",price:"300",initialQuantity:"2"});
+  const editedPart=await db.part.findUniqueOrThrow({where:{id:otherPart}});
+  assert.equal(editedPart.onHand.toFixed(),"3");
+  assert.equal(editedPart.oem,"OEM-"+suffix);
 
   const intake = {partyId,vehicleId,services:["installation"],at:monday};
   const {id:jobId} = await post(technician,"visit",intake);
