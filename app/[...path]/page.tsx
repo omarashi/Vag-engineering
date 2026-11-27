@@ -20,6 +20,7 @@ export default async function Page({ params, searchParams }: {
     q: read("q"), action: read("new"),
     page: Math.min(500, Math.max(0, Number.parseInt(read("page"), 10) || 0)),
     continueVisit: ["job", "visit"].includes(read("next")),
+    receipt: read("saved")==="1" ? read("receipt") : undefined,
   };
   const [route, id] = path;
   if (path.length > 2 || !canViewPage(user.role, route)) notFound();
@@ -46,7 +47,7 @@ export default async function Page({ params, searchParams }: {
     search: () => id ? notFound() : <LogSearch {...props}/>,
   };
   const officeQuery = Object.fromEntries(
-    ["q","from","to","status","party","staff","category","service","report","new","page","week","paymentKind","date","account"].map((key) => [key, read(key)]).filter(([, value]) => value),
+    ["q","from","to","status","party","invoice","vehicle","vendor","staff","category","service","report","new","page","week","paymentKind","date","account"].map((key) => [key, read(key)]).filter(([, value]) => value),
   );
   const content = Object.hasOwn(pages, route) ? pages[route as keyof typeof pages]() :
     <OfficePage lang={lang} route={route} id={id} actor={user} query={officeQuery}/>;

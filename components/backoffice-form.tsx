@@ -10,10 +10,11 @@ import { postFormAction, type PendingAction } from "@/lib/action-request";
 import { PurchaseLineFields, type PurchaseQuoteOption } from "./purchase-line";
 import { PurchaseProductPicker } from "./purchase-product-picker";
 import { useDialogDismiss } from "./use-dialog-dismiss";
+import { WorkshopBillingFields } from "./workshop-billing-fields";
 
 export type Option={value:string;name:string;related?:string;price?:string;cost?:string;version?:number};
 export type Field={key:string;label:string;help?:string;type?:"text"|"textarea"|"select"|"multi"|"check"|"date"|"datetime-local"|"month"|"password"|"email"|"partCategory";value?:string|boolean|string[];required?:boolean;options?:Option[];wide?:boolean;ltr?:boolean;depends?:string;inputMode?:"decimal"};
-export type ActionSpec={action:string;title:string;fields?:Field[];hidden?:Record<string,unknown>;post?:boolean;editor?:"lines"|"returns"|"allocations";options?:Option[];parts?:Option[];services?:Option[];onlyParts?:boolean;purchase?:boolean;purchaseQuotes?:PurchaseQuoteOption[];destination?:string;initialLines?:Row[];initialAllocation?:Record<string,string>;dynamic?:Record<string,Field[]>};
+export type ActionSpec={action:string;title:string;fields?:Field[];hidden?:Record<string,unknown>;post?:boolean;editor?:"lines"|"returns"|"allocations";options?:Option[];parts?:Option[];services?:Option[];onlyParts?:boolean;purchase?:boolean;purchaseQuotes?:PurchaseQuoteOption[];destination?:string;initialLines?:Row[];initialAllocation?:Record<string,string>;dynamic?:Record<string,Field[]>;workshopBilling?:{suppliers?:Option[]};invoiceCredit?:boolean};
 type Data=Record<string,unknown>;
 type Row=Record<string,string>;
 const makeLine=(onlyParts?:boolean):Row=>({kind:onlyParts?"part":"service",description:"",partId:"",quantity:"1",price:"",discount:"0"});
@@ -105,6 +106,7 @@ export function ActionForm({lang,spec,primary=false,auto=false,source}:{lang:Lan
         const selected=spec.services?.find((item)=>item.value===value);
         return {...row,serviceId:value,description:selected?.name ?? "",price:selected?.price ?? ""};
       }
+      if(spec.editor==="returns" && (key==="sourceId" || (key==="amount" && value))) return {...row,[key]:value,disposition:"none"};
       return {...row,[key]:value};
     }));
   }
@@ -208,8 +210,9 @@ export function ActionForm({lang,spec,primary=false,auto=false,source}:{lang:Lan
               </>)}
               {spec.editor==="returns"&&<>
                 <label className="field">{tr("Description")}<select required value={row.sourceId} onChange={(event)=>changeRow(index,"sourceId",event.target.value)}><option value="">{tr("Select…")}</option>{spec.options?.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select></label>
-                <label className="field">{tr("Quantity")}<input inputMode="decimal" dir="ltr" required value={row.quantity} onChange={(event)=>changeRow(index,"quantity",event.target.value)}/></label>
-                <label className="field">{tr("Stock disposition")}<select value={row.disposition} onChange={(event)=>changeRow(index,"disposition",event.target.value)}>{["none",spec.purchase?"remove":"restock"].map((key)=><option value={key} key={key}>{label(lang,key)}</option>)}</select></label>
+                  <label className="field">{tr("Quantity")}<input inputMode="decimal" dir="ltr" required disabled={Boolean(row.amount)} value={row.quantity} onChange={(event)=>changeRow(index,"quantity",event.target.value)}/></label>
+                  {spec.invoiceCredit && <label className="field">{tr("Partial credit amount (EGP)")}<input dir="ltr" inputMode="decimal" value={row.amount ?? ""} onChange={(event)=>changeRow(index,"amount",event.target.value)}/></label>}
+                  <label className="field">{tr("Stock disposition")}<select disabled={Boolean(row.amount) || !spec.options?.find((option)=>option.value===row.sourceId)?.related} value={row.disposition} onChange={(event)=>changeRow(index,"disposition",event.target.value)}>{["none",spec.purchase?"remove":"restock"].map((key)=><option value={key} key={key}>{label(lang,key)}</option>)}</select></label>
               </>}
               {editableAllocation&&<>
                 <label className="field">{tr("Document")}<select required value={row.documentId} onChange={(event)=>changeRow(index,"documentId",event.target.value)}><option value="">{tr("Select…")}</option>{relevant.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select></label>
@@ -218,6 +221,7 @@ export function ActionForm({lang,spec,primary=false,auto=false,source}:{lang:Lan
               <Button type="button" variant="ghost" onClick={()=>editRows((items)=>items.filter((_,position)=>position!==index))}>{tr("Remove line")}</Button>
             </div>)}
           </div>}
+          {spec.workshopBilling&&<WorkshopBillingFields lang={lang} values={state} suppliers={spec.workshopBilling.suppliers} onChange={update}/>}
           </div>
           {confirmed&&<p className="notice" role="status">{tr("Posting will update the linked records.")}</p>}
           {error&&<p className="error" role="alert">{message(lang,error)}</p>}

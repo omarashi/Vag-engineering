@@ -12,6 +12,7 @@ const monday = "2025-11-24";
 const tuesday = "2025-11-25";
 const wednesday = "2025-11-26";
 const friday = "2025-11-28";
+const saturday = "2025-11-29";
 async function post(session, name, data, key, status = 200) {
   const response = await postAction(base, session, name, data, key);
   assert.equal(response.status, status, await response.clone().text());
@@ -111,8 +112,8 @@ try {
   await post(accountant,"employeeAbsence",{employeeId,day:tuesday,action:"mark"});
   const absences = await db.employeeAbsence.findMany({where:{employeeId},orderBy:{day:"asc"},include:{deductionEntry:true}});
   assert.deepEqual(absences.map(row=>[row.halfDay,row.deductionEntry.amount]),[[true,-25000n],[false,-50000n]]);
-  await post(accountant,"employeeAbsence",{employeeId,day:"2025-11-23",action:"mark"},undefined,422);
-  const advance = {employeeId,kind:"advance",weekEnding:friday,at:tuesday,paymentChannel:"instaPay:"+instaPayId,amount:"2700"};
+  assert.equal((await post(accountant,"employeeAbsence",{employeeId,day:"2025-11-23",action:"mark"},undefined,422)).error,"attendanceDayOff");
+  const advance = {employeeId,kind:"advance",weekEnding:saturday,at:tuesday,paymentChannel:"instaPay:"+instaPayId,amount:"2700"};
   assert.equal((await post(accountant,"weeklyPayroll",advance,undefined,422)).error,"advanceLimit");
   const advanceId = await legacyAdvance(accountant,advance,"2250",45000n);
   const excess = await db.payrollExcess.findUniqueOrThrow({where:{paymentId:advanceId}});
@@ -120,10 +121,30 @@ try {
   assert.equal((await db.payment.findUniqueOrThrow({where:{id:advanceId}})).method,"instaPay");
   assert.equal(await db.cashMovement.count({where:{paymentId:advanceId,accountId:instaPayId,amount:-270000n}}),1);
   const {id:salaryEmployee}=await post(owner,"employee",{name:"Salary channel "+suffix,startedAt:monday,weeklySalary:"600"});
-  const {id:salaryId}=await post(accountant,"weeklyPayroll",{employeeId:salaryEmployee,kind:"salaryPayment",
-    weekEnding:friday,at:friday,paymentChannel:"transfer:"+visaId});
+  const salary={employeeId:salaryEmployee,kind:"salaryPayment",weekEnding:saturday,at:saturday,paymentChannel:"transfer:"+visaId};
+  assert.equal((await post(accountant,"weeklyPayroll",{...salary,weekEnding:friday,at:friday},undefined,422)).error,"payrollWeekSaturday");
+  assert.equal((await post(accountant,"weeklyPayroll",{...salary,at:friday},undefined,422)).error,"salaryBeforePayday");
+  assert.equal(await db.document.count({where:{employeeId:salaryEmployee,kind:"payroll"}}),0);
+  const {id:saturdayAbsence}=await post(accountant,"employeeAbsence",{employeeId:salaryEmployee,day:saturday,action:"halfDay"});
+  const saturdayEntry=await db.employeeAbsence.findUniqueOrThrow({where:{id:saturdayAbsence},include:{deductionEntry:true}});
+  const saturdayPeriod=await db.document.findUniqueOrThrow({where:{id:saturdayEntry.deductionEntry.documentId},include:{payroll:true}});
+  assert.equal(saturdayPeriod.reference,saturday);
+  assert.equal(saturdayPeriod.metadata.workweekStart,monday);
+  assert.equal(saturdayPeriod.payroll.find(row=>row.kind==="base").at.toISOString().slice(0,10),monday);
+  assert.equal((await post(accountant,"payment",{...salary,at:friday,amount:"550",
+    allocations:[{documentId:saturdayPeriod.id,amount:"550"}]},undefined,422)).error,"salaryBeforePayday");
+  const {id:salaryId}=await post(accountant,"weeklyPayroll",salary);
   assert.equal((await db.payment.findUniqueOrThrow({where:{id:salaryId}})).method,"transfer");
-  assert.equal(await db.cashMovement.count({where:{paymentId:salaryId,accountId:visaId,amount:-60000n}}),1);
+  assert.equal(await db.cashMovement.count({where:{paymentId:salaryId,accountId:visaId,amount:-55000n}}),1);
+  const {id:legacyEmployee}=await post(owner,"employee",{name:"Legacy payroll "+suffix,startedAt:monday,weeklySalary:"600",rate:"100",effectiveAt:monday});
+  await post(owner,"employee",{id:legacyEmployee,version:0,name:"Legacy payroll "+suffix,weeklySalary:"610",startedAt:monday});
+  assert.equal((await db.employee.findUniqueOrThrow({where:{id:legacyEmployee}})).rate,10000n);
+  assert.equal(await db.employeeRate.count({where:{employeeId:legacyEmployee}}),1);
+  const legacyPeriod=await db.document.create({data:{number:"PAY-LEGACY-"+suffix,kind:"payroll",category:"weekly",status:"posted",
+    reference:friday,createdBy:"test",employeeId:legacyEmployee,at:new Date(friday+"T10:00:00Z"),total:60000n}});
+  assert.equal((await post(accountant,"weeklyPayroll",{...salary,employeeId:legacyEmployee},undefined,409)).error,"overlappingPayrollWeek");
+  const {id:legacyPayment}=await post(accountant,"weeklyPayroll",{...salary,employeeId:legacyEmployee,weekEnding:friday,at:friday});
+  assert.equal(await db.allocation.count({where:{paymentId:legacyPayment,documentId:legacyPeriod.id}}),1);
   const sheet = await page(accountant,"/payroll?week="+monday);
   assert.match(sheet,/Weekly payroll sheet/);
   assert.match(sheet,/Half-day deduction/);
@@ -154,7 +175,7 @@ try {
   assert.ok(await db.audit.findFirst({where:{action:"payReopen",entityId:origin.id}}));
 
   const {id:applyEmployee}=await post(owner,"employee",{name:"Apply QA "+suffix,startedAt:"2025-11-01",weeklySalary:"3000"});
-  const applyAdvance = {employeeId:applyEmployee,kind:"advance",weekEnding:friday,at:tuesday,accountId,method:"instaPay",amount:"3100"};
+  const applyAdvance = {employeeId:applyEmployee,kind:"advance",weekEnding:saturday,at:tuesday,accountId,method:"instaPay",amount:"3100"};
   const applyAdvanceId=await legacyAdvance(accountant,applyAdvance,"3000",10000n);
   const applyReview=await db.payrollExcess.findUniqueOrThrow({where:{paymentId:applyAdvanceId}});
   const applyAllocation=await db.allocation.findFirstOrThrow({where:{paymentId:applyAdvanceId,documentId:applyReview.documentId}});
@@ -166,7 +187,7 @@ try {
   assert.equal(await db.cashMovement.count({where:{paymentId:applyAdvanceId}}),1);
 
   const {id:waiveEmployee}=await post(owner,"employee",{name:"Waiver QA "+suffix,startedAt:"2025-11-01",weeklySalary:"3000"});
-  const {id:waivePeriod}=await post(accountant,"weeklyPayroll",{employeeId:waiveEmployee,weekEnding:friday,kind:"deduction",at:tuesday,amount:"3100",note:"Waiver fixture"});
+  const {id:waivePeriod}=await post(accountant,"weeklyPayroll",{employeeId:waiveEmployee,weekEnding:saturday,kind:"deduction",at:tuesday,amount:"3100",note:"Waiver fixture"});
   const waived=await db.payrollExcess.findFirstOrThrow({where:{documentId:waivePeriod}});
   const waive={id:waived.id,expectedBalance:"10000",reason:"Waived by accountant",resolution:"waive"};
   const waiveKey=randomUUID();

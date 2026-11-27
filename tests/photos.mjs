@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { devices } from "../data/tooling/node_modules/playwright-core/index.mjs";
+import { devices } from "playwright";
 import { workshopPhotoMaxBytes as maxBytes, workshopPhotoMaxMegabytes } from "../lib/workshop-photo-limits.ts";
 import { browserFixtures, launchBrowser } from "./support/browser.mjs";
 
@@ -26,15 +26,20 @@ try {
   assert.equal(login.status(), 200);
   const business = (await db.setting.findUnique({ where: { key: "business" } }))?.value ?? {};
   if (!business.workshopPhotos) await fixture("settings", { ...business, version: business.version ?? 0, name: business.name ?? "VAG Engineering", workshopPhotos: true });
-  const partyId = await fixture("customer", { name: "Photo test " + randomUUID() });
+  const customerName = "Photo test " + randomUUID();
+  const partyId = await fixture("customer", { name: customerName });
   const vehicleId = await fixture("vehicle", { partyId, make: "VW", model: "Golf" });
+  const receiver = "Photo tester";
+  await fixture("employee",{name:receiver,weeklySalary:"1000",startedAt:"2025-11-01"});
   await page.goto(base + "/jobs?new=job");
   const newJob = page.getByRole("dialog", { name: "New job" });
-  await newJob.getByRole("combobox", { name: "Customer", exact: true }).selectOption(partyId);
+  const customerSearch = newJob.getByRole("searchbox", { name: "Search by customer name or phone", exact: true });
+  await customerSearch.fill(customerName);
+  await customerSearch.press("Enter");
   await newJob.getByRole("combobox", { name: "Car", exact: true }).selectOption(vehicleId);
   async function fillIntake() {
     await newJob.getByRole("radio", { name: /Car stays at the shop/ }).check();
-    await newJob.getByLabel("Received by").fill("Photo tester");
+    await newJob.getByLabel("Received by").selectOption(receiver);
     await newJob.getByRole("checkbox", { name: "Routine maintenance", exact: true }).check();
   }
   await fillIntake();

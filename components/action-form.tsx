@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "./navigation-link";
 import { ChevronDown, Plus, Search, X } from "lucide-react";
 import { Button } from "./ui";
-import { message, translate, type Language } from "@/lib/locale";
+import { day, message, money, translate, type Language } from "@/lib/locale";
 import type { VisitPartInput } from "@/lib/visit-items";
 import { parseMoney } from "@/lib/decimal-input";
 import { requestKey } from "@/lib/request-key";
@@ -13,11 +13,12 @@ import { postFormAction, type PendingAction } from "@/lib/action-request";
 import { prepareWorkshopPhotos } from "@/lib/prepare-workshop-photo";
 import { uploadWorkshopPhotos } from "@/lib/upload-workshop-photos";
 import { VisitPartsFields, type VisitPartOption } from "./visit-parts-fields";
-import { VisitInvoiceFields, type VisitInvoicePricing } from "./visit-invoice-fields";
+import { VisitInvoiceFields, type VisitInvoicePricing, type VisitWorkshopPricing } from "./visit-invoice-fields";
 import { WorkshopPhotoPicker } from "./workshop-photo-picker";
 import { useDialogDismiss } from "./use-dialog-dismiss";
+import { chargeTypes, type ImportInput } from "@/lib/workshop-charges";
 
-export type Option = { value: string; name: string; related?: string; description?: string };
+export type Option = { value: string; name: string; related?: string; description?: string; checkboxOnly?: boolean };
 export type Field = {
   key: string; label: string; type?: "text" | "textarea" | "select" | "searchSelect" | "check" | "checkboxes" | "radio" | "date" | "tel";
   value?: string | boolean | string[]; required?: boolean; options?: Option[]; wide?: boolean; ltr?: boolean; depends?: string;
@@ -28,16 +29,19 @@ export type Field = {
 };
 export type ActionSpec = {
   action: "customer" | "vehicle" | "visit" | "jobIntake" | "jobUpdate" | "visitInvoice" | "visitReceipt" | "customerDebtPayment" |
-    "payment" | "weeklyPayroll" | "employeeDismiss" | "resolvePayrollExcess" | "supplierStock" | "supplierQuote"; title: string; submitLabel?: string; fields: Field[]; hidden?: Record<string, unknown>;
+    "payment" | "customerCreditApply" | "customerCreditPayout" | "reverseCustomerCredit" | "weeklyPayroll" | "employeeDismiss" | "resolvePayrollExcess" | "supplierStock" | "supplierQuote"; title: string; submitLabel?: string; fields: Field[]; hidden?: Record<string, unknown>;
   destination: string; triggerLabel?: string; relatedLink?: { field: string; owner: string; href: string; label: string };
   partOptions?: VisitPartOption[];
   partsLabel?: string;
   photos?: { label: string; limit: number };
   invoicePricing?: VisitInvoicePricing;
+  workshopBilling?: VisitWorkshopPricing;
+  debt?: { mode:"single"|"split"; invoices:DebtInvoice[] };
   formSummary?: { label: string; amount: string; note?: string; name?: string };
   alternate?: { when: { key: string; value: string }; destination: string; submitLabel: string };
 };
 
+type DebtInvoice={id:string;number:string;at:string;total:string;paid:string;credited:string;applied:string;balance:string};
 type PendingPhotoUpload = { id: string; href: string; key: string; photos: File[] };
 
 export function ActionForm({ lang, spec, primary = false, auto = false }: { lang: Language; spec: ActionSpec; primary?: boolean; auto?: boolean }) {
@@ -63,6 +67,9 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
   const prices = (values.servicePrices ?? {}) as Record<string, string>;
   const t = (key: string) => translate(lang, key);
   const fields = spec.fields;
+  const selectedDebt=spec.debt?.invoices.find((invoice)=>invoice.id===values.invoiceId);
+  const splits=(values.debtSplit ?? {}) as Record<string,string>;
+  const splitRows=spec.debt?.mode==="split" ? spec.debt.invoices.filter((invoice)=>Boolean(splits[invoice.id]?.trim())) : [];
   const alternate = spec.alternate;
   const submission = alternate && values[alternate.when.key] === alternate.when.value ? alternate : spec;
 
@@ -85,7 +92,7 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
     // An incoming action opens once on entry to this screen.
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function update(key: string, value: string | boolean | string[] | Record<string, string> | VisitPartInput[]) {
+  function update(key: string, value: string | boolean | string[] | Partial<Record<string, string>> | VisitPartInput[] | ImportInput[]) {
     setDirty(true);
     setValues((previous) => ({
       ...previous, [key]: value,
@@ -101,6 +108,18 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
   }
 
   function validate(form: HTMLFormElement) {
+    if(spec.debt){
+      const amount=parseMoney(values.amount);
+      const splitAmounts=splitRows.map((invoice)=>parseMoney(splits[invoice.id]));
+      const validSplit=splitRows.length>0 && splitRows.every((invoice,index)=>{
+        const allocation=splitAmounts[index];
+        return allocation!==null && allocation>0n && allocation<=BigInt(invoice.balance);
+      }) && splitAmounts.reduce<bigint>((sum,value)=>sum+(value ?? 0n),0n)===amount;
+      if(spec.debt.mode==="single" && !selectedDebt) {setError("selectDebtInvoice");return false;}
+      if(amount===null || amount<=0n || (selectedDebt && amount>BigInt(selectedDebt.balance)) || (spec.debt.mode==="split"&&!validSplit)) {
+        setError(spec.debt.mode==="split"?"amountMismatch":"debtOverpayment");return false;
+      }
+    }
     const invalidPrice = spec.invoicePricing?.work.find(({ service }) => {
       const price = parseMoney(prices[service]);
       return price === null || price < 0n;
@@ -108,6 +127,18 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
     if (invalidPrice) {
       setError("needServicePrices");
       form.querySelector<HTMLElement>('[name="price-' + invalidPrice.service + '"]')?.focus();
+      return false;
+    }
+    const billingSelection = spec.workshopBilling?.selection ?? [];
+    const charges = (values.workshopCharges ?? {}) as Record<string, unknown>;
+    const invalidCharge = chargeTypes.find((type) => billingSelection.includes(type) && (parseMoney(charges[type]) ?? -1n) < 0n);
+    if (invalidCharge) {
+      setError("invalidWorkshopCharge");
+      form.querySelector<HTMLElement>('[name="' + invalidCharge + '"]')?.focus();
+      return false;
+    }
+    if (billingSelection.includes("importedItem") && !(values.importItems as ImportInput[] | undefined)?.length) {
+      setError("importItemRequired");
       return false;
     }
     const missing = fields.find((field) => {
@@ -145,7 +176,9 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
     try {
       let upload = pendingUpload;
       if (!upload) {
-        const body = JSON.stringify(values);
+        const body = JSON.stringify(spec.debt?.mode==="split"
+          ? {...values,allocations:splitRows.map((invoice)=>({documentId:invoice.id,amount:splits[invoice.id]}))}
+          : values);
         if (photoFiles.length && !preparedPhotos.current) {
           try {
             preparedPhotos.current = await prepareWorkshopPhotos(photoFiles);
@@ -163,7 +196,7 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
         }
         const target = new URL(submission.destination.replace("$id", encodeURIComponent(result.id)), window.location.origin);
         target.searchParams.set("saved", result.warning === "duplicateParty" ? "duplicate" : "1");
-        const href = target.pathname + target.search;
+        const href = target.pathname + target.search + target.hash;
         if (!preparedPhotos.current?.length) {
           goToSavedRecord(href);
           return;
@@ -207,7 +240,7 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
             <span>{option.name}</span>
           </label>)}
         </div>
-        {field.withDetails && options.filter((option) => selected.includes(option.value)).map((option) => {
+        {field.withDetails && options.filter((option) => !option.checkboxOnly && selected.includes(option.value)).map((option) => {
           const id = formId + "-" + option.value;
           return <div key={option.value} className="field log-service-detail">
             <label htmlFor={id}>{t("Details for {service}").replace("{service}", option.name)}</label>
@@ -328,8 +361,23 @@ export function ActionForm({ lang, spec, primary = false, auto = false }: { lang
               </div>}
               {spec.invoicePricing && <VisitInvoiceFields lang={lang} pricing={spec.invoicePricing} prices={prices}
                 discount={String(values.invoiceDiscount ?? "")} onDiscountChange={(next)=>update("invoiceDiscount",next)}
-                onChange={(next) => update("servicePrices", next)}/>}
-              <div className="form-grid">{fields.filter((field) => !field.advanced).map(renderField)}</div>
+                onChange={(next) => update("servicePrices", next)} billing={spec.workshopBilling}
+                values={values} onBillingChange={update}/>}
+              {spec.debt?.mode==="single" && <div className="form-grid">{fields.filter((field)=>field.key==="invoiceId").map(renderField)}</div>}
+              {selectedDebt && <dl className="visit-billing-totals">
+                <div><dt>{t("Invoice")}</dt><dd><bdi>{selectedDebt.number}</bdi></dd></div>
+                <div><dt>{t("Date")}</dt><dd><bdi>{day(lang,selectedDebt.at)}</bdi></dd></div>
+                <div><dt>{t("Invoice total")}</dt><dd><bdi>{money(lang,selectedDebt.total)}</bdi></dd></div>
+                <div><dt>{t("Previously paid")}</dt><dd><bdi>{money(lang,selectedDebt.paid)}</bdi></dd></div>
+                {BigInt(selectedDebt.credited)>0n&&<div><dt>{t("Credits issued")}</dt><dd><bdi>{money(lang,selectedDebt.credited)}</bdi></dd></div>}
+                {BigInt(selectedDebt.applied)>0n&&<div><dt>{t("Applied customer credit")}</dt><dd><bdi>{money(lang,selectedDebt.applied)}</bdi></dd></div>}
+                <div><dt>{t("Remaining debt")}</dt><dd><bdi>{money(lang,selectedDebt.balance)}</bdi></dd></div>
+              </dl>}
+              {spec.debt?.mode==="split" && <fieldset className="invoice-price-list"><legend>{t("Allocate payment")}</legend>
+                {spec.debt.invoices.map((invoice)=><label className="invoice-price-row" key={invoice.id}><span><bdi>{invoice.number}</bdi> · <bdi>{money(lang,invoice.balance)}</bdi></span>
+                  <input dir="ltr" inputMode="decimal" value={splits[invoice.id] ?? ""} onChange={(event)=>update("debtSplit",{...splits,[invoice.id]:event.target.value})}/></label>)}
+              </fieldset>}
+              <div className="form-grid">{fields.filter((field) => !field.advanced && (!spec.debt || field.key!=="invoiceId")).map(renderField)}</div>
               {spec.partOptions && <VisitPartsFields lang={lang} options={spec.partOptions} legend={spec.partsLabel} parts={(values.parts ?? []) as VisitPartInput[]}
                 onChange={(parts) => update("parts", parts)}/>}
               {advanced.length > 0 && <details className="log-optional" ref={formDetails}>

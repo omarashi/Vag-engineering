@@ -13,19 +13,21 @@ import { closedJobStatuses, openJobStatuses } from "@/lib/workshop";
 import { customerDebtList } from "@/lib/customer-debt";
 import { can } from "@/lib/permissions";
 import { today } from "@/lib/rules";
-import { carForm, customerChoices, customerDebtForm, customerForm, jobForm, jobProgressForm, receiptAccounts, receiverSuggestions, visitPartOptions } from "@/lib/visit-forms";
+import { carForm, customerChoices, customerForm, jobForm, jobProgressForm, receiverSuggestions, visitPartOptions } from "@/lib/visit-forms";
+import { billingSelection, chargeLabels, chargeTypes, workshopCharges, workshopImports } from "@/lib/workshop-charges";
+import { parseMoney } from "@/lib/decimal-input";
 import { jobModeLabel, visitParts, visitTitle, visitWork, workshopIntake } from "@/lib/visit-items";
 import { workshopPhotosOn } from "@/lib/workshop-photos";
 import { workshopPhotoLimit } from "@/lib/workshop-photo-limits";
 import { ActionForm } from "./action-form";
 import { WorkshopMedia } from "./workshop-media";
 import { CustomerDebt } from "./customer-debt";
-import { CashAccountSetup, DocRegister, PrintLink } from "./register";
+import { DocRegister, PrintLink } from "./register";
 import { VisitBilling } from "./visit-billing";
 import { VisitWorkList } from "./visit-work-list";
 import { Badge, ButtonLink, Empty, Panel } from "./ui";
 
-export type LogQuery = { q: string; action: string; page: number; continueVisit: boolean };
+export type LogQuery = { q: string; action: string; page: number; continueVisit: boolean; receipt?:string };
 type Props = { lang: Language; query: LogQuery };
 type Visit = Awaited<ReturnType<typeof visitList>>[number];
 type Customer = Awaited<ReturnType<typeof customerResults>>[number];
@@ -240,22 +242,12 @@ export async function CustomerList({ lang, query }: Props) {
 
 export async function Debts({ lang, query, role, receipt }: Props & { role: Role; receipt: string }) {
   const mayPay = can(role, "customerDebtPayment");
-  const [balances, accounts] = await Promise.all([
-    customerDebtList(db, query.q, query.page * pageSize, pageSize + 1),
-    mayPay ? receiptAccounts() : [],
-  ]);
+  const balances=await customerDebtList(db, query.q, query.page * pageSize, pageSize + 1);
   const t = (key: string) => translate(lang, key);
   const rows = balances.slice(0, pageSize);
-  const search = new URLSearchParams();
-  if (query.q) search.set("q", query.q);
-  if (query.page) search.set("page", String(query.page));
-  const destination = "/debts?" + (search.size ? search.toString() + "&" : "") + "receipt=$id";
-  const needsAccount = mayPay && !accounts.length && rows.some((row) => !row.archived);
 
   return <>
-    <Title lang={lang} title="Customer debts">
-      {needsAccount && <CashAccountSetup lang={lang} canManage={can(role,"account")}/>}
-    </Title>
+    <Title lang={lang} title="Customer debts"/>
     {/^[a-z0-9_-]+$/i.test(receipt) && <p className="notice log-saved debt-payment-notice" role="status">
       {t("Payment recorded")} <Link href={"/payment/" + receipt}>{t("View receipt")}</Link>
     </p>}
@@ -270,9 +262,7 @@ export async function Debts({ lang, query, role, receipt }: Props & { role: Role
           <small>{t("Outstanding balance")}</small>
           <strong><bdi>{money(lang, row.balance)}</bdi></strong>
         </div>
-        {mayPay && !row.archived && accounts.length > 0 && <ActionForm lang={lang} spec={customerDebtForm(lang, row.id, row.balance, accounts, {
-          name: row.name, destination,
-        })}/>}
+        {mayPay && !row.archived && <ButtonLink href={"/customers/"+row.id+"?new=debt#customer-balance"}>{t("Pay Debt")}</ButtonLink>}
       </li>)}</ul> : <Empty lang={lang} text={query.q ? "No matching customers with a balance" : "No customers owe money"}/>}
     </div>
     <Pagination lang={lang} route="/debts" query={query} count={rows.length} hasNext={balances.length > pageSize}/>
@@ -299,7 +289,8 @@ export async function CustomerPage({ lang, query, id, role }: Props & { id: stri
         ["Mobile number", person.phone ? <a className="log-phone" href={"tel:" + person.phone.replace(/[^\d+٠-٩]/g, "")}><Phone size={15}/><bdi>{person.phone}</bdi></a> : null],
         ["Notes", person.note], ["Other contact", person.contact], ["Address", person.address], ["Status", person.archived ? t("Archived") : ""],
       ]}/>
-      {mayViewBilling && <CustomerDebt lang={lang} partyId={id} role={role} archived={person.archived}/>}
+      {mayViewBilling && <CustomerDebt lang={lang} partyId={id} role={role} archived={person.archived} name={person.name}
+        auto={query.action==="debt"} receipt={query.receipt}/>}
       <Panel title={t("Customer’s cars")}><CarRows lang={lang} rows={person.vehicles}/></Panel>
       <Panel title={t("Recent jobs")} link={"/jobs?party=" + id} linkLabel={t("View all")}><VisitRows lang={lang} rows={visits} scope="customer"/></Panel>
     </div>
@@ -360,6 +351,9 @@ export async function ServiceJobPage({ lang, row, role, autoReceipt }: { lang: L
   const closed = closedJobStatuses.includes(row.status);
   const editable = row.status !== "cancelled";
   const mayTakePayment = can(role, "visitReceipt");
+  const charges = workshopCharges(row.metadata);
+  const selectedBilling = billingSelection(row.metadata);
+  const imports = mayTakePayment ? workshopImports(row.metadata) : [];
   const [partOptions, receivers, photosEnabled] = await Promise.all([
     editable && !row.related.length ? visitPartOptions(lang) : undefined,
     intake && editable ? receiverSuggestions() : undefined,
@@ -372,7 +366,7 @@ export async function ServiceJobPage({ lang, row, role, autoReceipt }: { lang: L
   return <><Link className="log-back" href={closed ? "/jobs/history" : "/jobs"}>{t("Back to jobs")}</Link>
     <Title lang={lang} title={visitTitle(lang, row)} literal detail={row.number}>
       {canProgress && <ActionForm lang={lang} spec={jobProgressForm(row, mayTakePayment, photoSlots)} primary/>}
-      {editable && <ActionForm lang={lang} spec={jobForm(lang, { row, partOptions, receivers, mayTakePayment })} primary={!canProgress}/>}
+      {editable && <ActionForm lang={lang} spec={jobForm(lang, { row, partOptions, receivers, mayTakePayment, canEditBilling: !row.related.length })} primary={!canProgress}/>}
       {intake && mayTakePayment && <PrintLink lang={lang} type="record" id={id}/>}
     </Title>
     <div className="log-stack"><Details lang={lang} items={[
@@ -387,8 +381,15 @@ export async function ServiceJobPage({ lang, row, role, autoReceipt }: { lang: L
       ["Notes", row.note], ["Work notes", metadata.work], ["Inspection", metadata.inspection], ["Requested work", metadata.requested],
     ]}/>
     {mayTakePayment && (finished || row.related.length > 0) && editable && <VisitBilling lang={lang} id={id} role={role} work={work} parts={parts}
-      version={row.version} autoReceipt={autoReceipt} serviceDay={deliveryDate || today(row.at)}/>}
-    {work.length > 0 && <Panel title={t(finished ? "Work done" : "Selected services")}><VisitWorkList lang={lang} work={work}/></Panel>}
+      version={row.version} autoReceipt={autoReceipt} serviceDay={deliveryDate || today(row.at)} metadata={row.metadata}/>}
+    {!row.related.length && Object.keys(charges).length > 0 && <Details lang={lang} items={chargeTypes.map((type) => [chargeLabels[type],
+      charges[type] ? <bdi>{money(lang, parseMoney(charges[type]) ?? 0n)}</bdi> : null])}/>}
+    {!row.related.length && imports.length > 0 && <Panel title={t("Imported items")}><ul className="visit-work-list">{imports.map((item, index) => <li key={index}>
+      <strong><bdi>{item.name}</bdi></strong><p><bdi>{item.supplierName} · {item.quantity} × {money(lang, parseMoney(item.sellingPrice) ?? 0n)}</bdi></p>
+    </li>)}</ul></Panel>}
+    {(work.length > 0 || selectedBilling.length > 0) && <Panel title={t(finished ? "Work done" : "Selected services")}>
+      <VisitWorkList lang={lang} work={work} billing={selectedBilling}/>
+    </Panel>}
     {parts.length > 0 && <Panel title={t("Parts used")}><ul className="visit-work-list">{parts.map((part) => <li key={part.partId}>
       <strong><bdi>{part.code + " · " + part.name}</bdi></strong>
       <p><bdi>{mayTakePayment ? part.quantity + " × " + money(lang, part.unitPrice) : part.quantity}</bdi></p>

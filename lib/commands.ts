@@ -12,6 +12,7 @@ import { employeeAbsence, employeeDismiss, resolvePayrollExcess, weeklyPayroll }
 import type { Command } from "./permissions";
 import type { Tx } from "./db";
 import type { Change } from "./transaction";
+import { customerCreditApply, customerCreditPayout, customerRefund, reverseCustomerCredit } from "./customer-credit";
 
 const handlers: Record<Command,(tx:Tx,data:masters.Input,actor:Actor)=>Promise<Change>> = {
   customer:(tx,data)=>masters.party(tx,"customer",data),
@@ -24,6 +25,7 @@ const handlers: Record<Command,(tx:Tx,data:masters.Input,actor:Actor)=>Promise<C
   purchaseOrder:trade.purchaseOrder,purchase:trade.purchase,invoice:trade.invoice,credit:trade.credit,reverseDocument:trade.reverseDocument,
   payment:cash.payment,visitInvoice,visitReceipt,customerDebtPayment:cash.customerDebtPayment,allocate:cash.allocate,unallocate:cash.unallocate,reversePayment:cash.reversePayment,expense:cash.expense,
   paidExpense:cash.paidExpense,
+  customerRefund,customerCreditApply,customerCreditPayout,reverseCustomerCredit,
   opening:cash.opening,openingFinalize:cash.openingFinalize,payPeriod:cash.payPeriod,
   payEntry:cash.payEntry,payFinalize:cash.payFinalize,payReopen:cash.payReopen,
   employeeAbsence,employeeDismiss,resolvePayrollExcess,weeklyPayroll,

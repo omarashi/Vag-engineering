@@ -6,6 +6,7 @@ import { prefixes, type Actor, type Change } from "./transaction";
 import { workshopPhotosEnabled } from "./workshop-photos";
 import { can } from "./permissions";
 import { internalLoginEmail, normalizeUsername, validUsername } from "./usernames";
+import { defaultEmployeeStart } from "./payroll-rules";
 
 export type Input = Record<string, unknown>;
 export function checkVersion(before: {version: number} | null, input: Input) {
@@ -22,6 +23,9 @@ export async function party(tx: Tx, kind: "customer" | "supplier", input: Input)
   };
   const duplicate = await tx.party.findFirst({where:{kind, id:{not:id}, archived:false,
     OR:[{name:{equals:data.name,mode:"insensitive"}}, ...(data.phone ? [{phone:data.phone}] : [])]}});
+  if (kind === "supplier" && duplicate && !data.archived) {
+    requireRule(before && !before.archived && before.name === data.name && before.phone === data.phone, "duplicateSupplier", 409);
+  }
   const after = id
     ? await tx.party.update({ where: { id }, data:{...data, version:{increment:1}} })
     : await tx.party.create({ data });
@@ -89,12 +93,16 @@ export async function employee(tx: Tx, input: Input, actor: Actor): Promise<Chan
   const endedAt = before?.dismissalReason || input.endedAt === undefined ? before?.endedAt ?? null :
     input.endedAt ? date(input.endedAt) : null;
   const archived = before?.dismissalReason ? true : input.archived === undefined ? before?.archived ?? false : input.archived === true;
-  const data = { name:needed(input.name), phone:text(input.phone,80), arrangement:text(input.arrangement,180),
-    rate:cents(input.rate),effectiveAt:date(input.effectiveAt),startedAt: input.startedAt ? date(input.startedAt) : before?.startedAt ?? new Date(),
+  const startedAt = input.startedAt ? date(input.startedAt) : before?.startedAt ?? date(defaultEmployeeStart());
+  const data = { name:needed(input.name), phone:text(input.phone,80),
+    arrangement:input.arrangement === undefined ? before?.arrangement ?? "" : text(input.arrangement,180),
+    rate:input.rate === undefined ? before?.rate ?? 0n : cents(input.rate),
+    effectiveAt:input.effectiveAt ? date(input.effectiveAt) : before?.effectiveAt ?? startedAt,startedAt,
     weeklySalary, paidDaysPerWeek, endedAt, note:text(input.note),archived };
   requireRule(!data.endedAt || today(data.endedAt) >= today(data.startedAt));
   const after = id ? await tx.employee.update({where:{id},data:{...data,version:{increment:1}}}) : await tx.employee.create({data});
-  if (!before || before.rate !== data.rate || before.arrangement !== data.arrangement || before.effectiveAt.getTime() !== data.effectiveAt.getTime()) {
+  if ((data.rate !== 0n || (before?.rate ?? 0n) !== 0n) &&
+      (!before || before.rate !== data.rate || before.arrangement !== data.arrangement || before.effectiveAt.getTime() !== data.effectiveAt.getTime())) {
     await tx.employeeRate.create({data:{employeeId:after.id,amount:data.rate,arrangement:data.arrangement,effectiveAt:data.effectiveAt,actorId:actor.id}});
   }
   return {id:after.id,before,after};

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { amountDue,cents,date,extended,today,unitAmount,units } from "../lib/rules";
 import { can } from "../lib/permissions";
 import { signature } from "../lib/storage";
+import { currentWeekEnding, defaultEmployeeStart, weekStarting } from "../lib/payroll-rules";
 
 test("EGP parsing and half-up line rounding use minor units",()=>{
   assert.equal(cents("١٢٣٫٤٥"),12345n);
@@ -25,6 +26,15 @@ test("posting, administration and payroll permissions",()=>{
   assert.equal(can("owner","payEntry"),true);
   assert.equal(can("accountant","user"),false);
   assert.equal(can("owner","user"),true);
+});
+test("Weekly payroll closes on Saturday after six workdays",()=>{
+  assert.equal(defaultEmployeeStart("2026-11-26"),"2026-11-30");
+  assert.equal(defaultEmployeeStart("2026-12-01"),"2026-12-01");
+  assert.equal(weekStarting("2026-12-05"),"2026-11-30");
+  assert.equal(currentWeekEnding("2026-11-30"),"2026-12-05");
+  assert.equal(currentWeekEnding("2026-12-04"),"2026-12-05");
+  assert.equal(currentWeekEnding("2026-12-05"),"2026-12-05");
+  assert.equal(currentWeekEnding("2026-12-06"),"2026-12-12");
 });
 test("attachment magic bytes distinguish supported files",()=>{
   assert.equal(signature(Buffer.from("%PDF-1.4")),"application/pdf");

@@ -38,6 +38,12 @@ enum LineKind {
   part
   supplied
 }
+enum LinePurpose {
+  generalLabor
+  electricalWork
+  electricalLabor
+  importedItem
+}
 enum PaymentKind {
   receipt
   supplierPayment
@@ -152,6 +158,8 @@ model Party {
   vehicles  Vehicle[]
   documents Document[]
   payments  Payment[]
+  suppliedLines Line[]
+  refundBatches RefundBatch[]
 
   @@index([kind, archived, name])
   @@index([phone])
@@ -279,6 +287,10 @@ model Document {
   employee    Employee? @relation(fields: [employeeId], references: [id])
   sourceId    String?
   source      Document? @relation("Source", fields: [sourceId], references: [id])
+  refundBatchId String?
+  refundBatch RefundBatch? @relation(fields: [refundBatchId], references: [id], onDelete: Restrict)
+  creditUses CustomerCreditUse[] @relation("SourceCredit")
+  appliedCredits CustomerCreditUse[] @relation("CreditDestination")
   related     Document[] @relation("Source")
   reference   String @default("")
   category    String @default("")
@@ -303,12 +315,18 @@ model Document {
   @@index([vehicleId, at])
   @@index([employeeId, kind])
   @@index([sourceId, kind])
+  @@index([refundBatchId])
 }
 model Line {
   id          String @id @default(cuid())
   documentId  String
   document    Document @relation(fields: [documentId], references: [id])
   kind        LineKind
+  purpose     LinePurpose?
+  supplierId  String?
+  supplier    Party? @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  supplierName String @default("")
+  buyingPrice BigInt?
   description String
   partId      String?
   part        Part? @relation(fields: [partId], references: [id])
@@ -321,10 +339,13 @@ model Line {
   total       BigInt
   costTotal   BigInt @default(0)
   stockQty    Decimal @default(0) @db.Decimal(16,3)
+  returnDisposition String?
   position    Int
 
   @@index([documentId, position])
   @@index([sourceId])
+  @@index([purpose, documentId])
+  @@index([supplierId])
 }
 model Assignment {
   documentId String
@@ -406,11 +427,48 @@ model Payment {
   actorId       String
   movements     CashMovement[]
   allocations   Allocation[]
+  creditUses CustomerCreditUse[] @relation("SourceReceipt")
+  creditRefund CustomerCreditUse? @relation("CreditPayout")
 
   @@index([partyId, at])
   @@index([employeeId, at])
   @@index([kind, at])
   payrollExcess PayrollExcess?
+}
+model RefundBatch {
+  id String @id @default(cuid())
+  partyId String
+  party Party @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  at DateTime
+  actorId String
+  reason String
+  settlement String
+  createdAt DateTime @default(now())
+  notes Document[]
+
+  @@index([partyId, at])
+}
+model CustomerCreditUse {
+  id String @id @default(cuid())
+  creditId String?
+  credit Document? @relation("SourceCredit", fields: [creditId], references: [id], onDelete: Restrict)
+  receiptId String?
+  receipt Payment? @relation("SourceReceipt", fields: [receiptId], references: [id], onDelete: Restrict)
+  invoiceId String?
+  invoice Document? @relation("CreditDestination", fields: [invoiceId], references: [id], onDelete: Restrict)
+  payoutId String? @unique
+  payout Payment? @relation("CreditPayout", fields: [payoutId], references: [id], onDelete: Restrict)
+  amount BigInt
+  at DateTime
+  actorId String
+  createdAt DateTime @default(now())
+  reversedAt DateTime?
+  reversedBy String?
+  reverseReason String?
+
+  @@index([creditId, reversedAt])
+  @@index([receiptId, reversedAt])
+  @@index([invoiceId, reversedAt])
 }
 model Allocation {
   id         String @id @default(cuid())

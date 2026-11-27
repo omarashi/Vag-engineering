@@ -111,9 +111,9 @@ try {
   assert.match(invoiceHtml, /Replaced engine oil and filter/);
   assert.match(invoiceHtml, /Calibrated ECU and checked boost logs/);
   assert.match(invoiceHtml, /Oil filter/);
-  assert.match(invoiceHtml, /Payments received.*500\.00/);
-  assert.match(invoiceHtml, /Amount due.*0\.00/);
-  assert.match(html, /الإجمالي<\/dt><dd><bdi>[^<]*٥٠٠٫٠٠/);
+  assert.match(invoiceHtml, /Amount paid.*500\.00/);
+  assert.match(invoiceHtml, /Remaining balance.*0\.00/);
+  assert.match(html, /إجمالي الفاتورة<\/dt><dd><bdi>[^<]*٥٠٠٫٠٠/);
   assert.match(html, /المدفوع<\/dt><dd><bdi>[^<]*٢٠٠٫٠٠/);
   assert.ok(!html.includes(account.name), "The printed receipt should omit the payment account name.");
   const secondCar = await post(owner, "vehicle", { partyId, make: "Audi", model: "A3" });
@@ -127,7 +127,8 @@ try {
   const newer = await chargeVisit("2025-11-19", secondCar, "400", "Scan transmission faults");
   const opening = await post(owner, "opening", { kind: "customerOpening", partyId, at: "2025-11-20", amount: "25", reference: "Paper balance " + randomUUID() });
   for (const id of [older, newer, opening]) assert.equal((await db.document.findUniqueOrThrow({ where: { id } })).dueAt, null);
-  const debt = { partyId, amount: "٣٥٠", at: "2025-11-21", accountId: account.id, method: "cash" };
+  const debt = { partyId, amount: "٣٥٠", at: "2025-11-21", accountId: account.id, method: "cash",
+    allocations:[{documentId:older,amount:"300"},{documentId:newer,amount:"50"}] };
   assert.equal((await action(technician, "customerDebtPayment", debt)).status, 403);
   assert.equal((await action(owner, "customerDebtPayment", { ...debt, amount: "726" })).status, 422);
   assert.equal((await action(owner, "customerDebtPayment", { ...debt, at: "2025-11-18" })).status, 422);
@@ -152,17 +153,20 @@ try {
   const nextReceipt = await readReceipt(installment);
   assert.match(nextReceipt, /Inspect brakes and suspension/);
   assert.match(nextReceipt, /Scan transmission faults/);
-  assert.match(nextReceipt, /Total<\/dt><dd><bdi>EGP\s*700\.00/);
-  assert.match(nextReceipt, /Paid<\/dt><dd><bdi>EGP\s*350\.00/);
+  assert.match(nextReceipt, /Balance before payment<\/dt><dd><bdi>EGP\s*400\.00/);
+  assert.match(nextReceipt, /Paid this time<\/dt><dd><bdi>EGP\s*50\.00/);
+  assert.match(nextReceipt, /Remaining balance<\/dt><dd><bdi>EGP\s*350\.00/);
+  assert.match(nextReceipt, /Total received<\/dt><dd><bdi>EGP\s*350\.00/);
   assert.doesNotMatch(nextReceipt, /Change given|Customer balance after payment|Applied from this payment/);
-  const settle = { ...debt, amount: "375", at: "2025-12-03" };
+  const settle = { ...debt, amount: "375", at: "2025-12-03", allocations:[{documentId:newer,amount:"350"},{documentId:opening,amount:"25"}] };
   const concurrently = await Promise.all([action(owner, "customerDebtPayment", settle), action(accountant, "customerDebtPayment", settle)]);
   assert.deepEqual(concurrently.map((response) => response.status).sort(), [200, 422]);
   const final = (await concurrently.find((response) => response.ok).json()).id;
   const finalEntry = await db.payment.findUniqueOrThrow({ where: { id: final }, include: { allocations: true } });
   assert.deepEqual(new Map(finalEntry.allocations.map(({ documentId, amount }) => [documentId, amount])), new Map([[newer, 35000n], [opening, 2500n]]));
   assert.equal(finalEntry.snapshot.customerDebtAfter, "0");
-  assert.match(await readReceipt(installment), /Paid<\/dt><dd><bdi>EGP\s*350\.00/);
+  assert.match(await readReceipt(installment), /Remaining balance<\/dt><dd><bdi>EGP\s*350\.00/);
+  assert.match(await readReceipt(final), /Remaining balance<\/dt><dd><bdi>EGP\s*0\.00/);
   await post(owner, "reversePayment", { id: final, at: "2025-12-03", reason: "Payment reversal QA" });
   const replacement = await post(owner, "customerDebtPayment", settle);
   assert.notEqual(replacement, final);
@@ -277,7 +281,12 @@ try {
   });
   const released = await db.allocation.findFirstOrThrow({ where: { paymentId: splitReceiptId, amount: 10000n } });
   await post(owner, "unallocate", { id: released.id, reason: "Correction to allocation" });
-  assert.match(await readReceipt(splitReceiptId), /Total<\/dt><dd><bdi>EGP\s*245\.00/);
+  await post(owner, "allocate", { id: splitReceiptId, allocations: [{ documentId: sameNameSaleId, amount: "100" }] });
+  const reallocatedReceipt = await readReceipt(splitReceiptId);
+  assert.match(reallocatedReceipt, /Allocation released/);
+  assert.match(reallocatedReceipt, /Invoice total<\/dt><dd><bdi>EGP\s*245\.00/);
+  assert.match(reallocatedReceipt, /Amount paid<\/dt><dd><bdi>EGP\s*245\.00/);
+  assert.doesNotMatch(reallocatedReceipt, /Total received|345\.00/);
 
   const saleLine = await db.line.findFirstOrThrow({ where: { documentId: saleId } });
   const saleCredit = await post(owner, "credit", {
@@ -291,7 +300,7 @@ try {
   const settledInvoice = await fetch(base + "/print/record/" + saleId + "?lang=en", { headers: { Cookie: owner } });
   const settledHtml = await settledInvoice.text();
   assert.match(settledHtml, /Credits issued.*122\.50/);
-  assert.match(settledHtml, /Amount due.*0\.00/);
+  assert.match(settledHtml, /Remaining balance.*0\.00/);
 
   const heldJob = await post(technician, "jobIntake", {
     partyId, vehicleId, jobMode: "stay", at: "2025-11-17", receivedBy: "Billing QA", services: ["installation","inspection"],
@@ -322,21 +331,22 @@ try {
   const employeeId = await post(owner, "employee", {
     name: "Weekly payroll QA " + randomUUID().slice(0, 8), startedAt: "2025-11-15", weeklySalary: "3000", paidDaysPerWeek: 6,
   });
-  const weekEnding = "2025-11-21";
+  const weekEnding = "2025-11-22";
+  const nextWeek = "2025-11-29";
   const forWeek = { employeeId, weekEnding, at: weekEnding };
   const advance = { ...forWeek, kind: "advance", amount: "600", accountId: account.id, periodId: "" };
   assert.equal((await action(technician, "weeklyPayroll", advance)).status, 403);
   const advanceKey = randomUUID();
   const advanceId = await post(accountant, "weeklyPayroll", advance, advanceKey);
   assert.equal(await post(accountant, "weeklyPayroll", advance, advanceKey), advanceId);
-  assert.equal((await action(owner, "weeklyPayroll", { ...advance, weekEnding: "2025-11-22" })).status, 409);
+  assert.equal((await action(owner, "weeklyPayroll", { ...advance, weekEnding: "2025-11-21" })).status, 422);
   const period = await db.document.findFirstOrThrow({where:{employeeId,kind:"payroll",reference:weekEnding}});
   const deduction = { ...forWeek, kind: "deduction", amount: "200", note: "Approved deduction", periodId: period.id };
   await post(accountant, "weeklyPayroll", deduction);
   const settleWeek = { ...forWeek, kind: "salaryPayment", accountId: account.id, periodId: period.id };
   assert.equal((await action(owner, "weeklyPayroll", { ...settleWeek, expectedBalance: "240000" })).status, 409);
 
-  const absence = { employeeId, action: "mark" };
+  const absence = { employeeId, action: "mark", day: nextWeek };
   assert.equal((await action(technician, "employeeAbsence", absence)).status, 403);
   const absenceId = await post(owner, "employeeAbsence", absence);
   assert.equal(await post(owner, "employeeAbsence", absence), absenceId);
@@ -369,12 +379,12 @@ try {
   assert.deepEqual(new Map(weekly.allocations.map(row=>[row.payment.kind,row.amount])),new Map([["advance",60000n],["salaryPayment",220000n]]));
   for (const row of weekly.allocations) assert.deepEqual(row.payment.movements.map(movement=>movement.amount),[-row.amount]);
 
-  const pendingEmployeeId = await post(owner,"employee",{name:"Payroll setup QA "+randomUUID().slice(0,8)});
+  const pendingEmployeeId = await post(owner,"employee",{name:"Payroll setup QA "+randomUUID().slice(0,8),startedAt:"2025-11-17"});
   assert.equal((await db.employee.findUniqueOrThrow({where:{id:pendingEmployeeId}})).paidDaysPerWeek,6);
-  const pendingId = await post(owner,"employeeAbsence",{employeeId:pendingEmployeeId,action:"mark"});
+  const pendingId = await post(owner,"employeeAbsence",{employeeId:pendingEmployeeId,action:"mark",day:weekEnding});
   assert.equal((await db.employeeAbsence.findUniqueOrThrow({where:{id:pendingId}})).deductionEntryId,null);
   const firstPayout = {
-    employeeId:pendingEmployeeId,kind:"salaryPayment",weekEnding:cairoToday,at:cairoToday,
+    employeeId:pendingEmployeeId,kind:"salaryPayment",weekEnding,at:weekEnding,
     accountId:account.id,
   };
   const noSalary = await action(owner,"weeklyPayroll",{...firstPayout,weeklySalary:"3000"});
@@ -389,11 +399,10 @@ try {
   assert.equal((await db.payment.findUniqueOrThrow({where:{id:paidWithDeduction}})).amount,250000n);
   assert.ok((await db.employeeAbsence.findUniqueOrThrow({where:{id:pendingId}})).deductionEntryId);
 
-  const rollEmployeeId = await post(owner,"employee",{name:"Payroll week QA "+randomUUID().slice(0,8),weeklySalary:"3000"});
-  const bookedWeek = {employeeId:rollEmployeeId,weekEnding:cairoToday,at:cairoToday,accountId:account.id};
-  const nextWeek = new Date(Date.parse(cairoToday+"T12:00:00Z")+7*86400000).toISOString().slice(0,10);
+  const rollEmployeeId = await post(owner,"employee",{name:"Payroll week QA "+randomUUID().slice(0,8),startedAt:"2025-11-17",weeklySalary:"3000"});
+  const bookedWeek = {employeeId:rollEmployeeId,weekEnding,at:weekEnding,accountId:account.id};
   const beforePay = await post(owner,"weeklyPayroll",{...bookedWeek,kind:"advance",amount:"600"});
-  const firstPeriod = await db.document.findFirstOrThrow({where:{employeeId:rollEmployeeId,kind:"payroll",reference:cairoToday}});
+  const firstPeriod = await db.document.findFirstOrThrow({where:{employeeId:rollEmployeeId,kind:"payroll",reference:weekEnding}});
   assert.equal((await db.allocation.findFirstOrThrow({where:{paymentId:beforePay}})).documentId,firstPeriod.id);
   await post(owner,"weeklyPayroll",{...bookedWeek,kind:"salaryPayment"});
 
@@ -408,25 +417,25 @@ try {
   assert.equal(deductionReview.remaining,20000n);
   await post(owner,"resolvePayrollExcess",{id:deductionReview.id,expectedBalance:"20000",reason:"No balance this week",resolution:"waive"});
 
-  const rolledAbsence = await post(owner,"employeeAbsence",{employeeId:rollEmployeeId,action:"mark"});
+  const rolledAbsence = await post(owner,"employeeAbsence",{employeeId:rollEmployeeId,action:"mark",day:weekEnding});
   const absenceAfterPay = await db.employeeAbsence.findUniqueOrThrow({where:{id:rolledAbsence},include:{deductionEntry:true}});
   assert.equal(absenceAfterPay.deductionEntryId,null);
   assert.equal(await db.document.count({where:{employeeId:rollEmployeeId,kind:"payroll",reference:nextWeek}}),0);
   assert.equal((await db.document.findUniqueOrThrow({where:{id:firstPeriod.id}})).total,300000n);
-  await post(owner,"employeeAbsence",{employeeId:rollEmployeeId,action:"undo"});
-  assert.equal(await db.payrollExcess.count({where:{documentId:firstPeriod.id,voidedAt:null}}),0);
+  await post(owner,"employeeAbsence",{employeeId:rollEmployeeId,action:"undo",day:weekEnding});
+  assert.equal(await db.payrollExcess.count({where:{documentId:firstPeriod.id,voidedAt:null,remaining:{gt:0}}}),0);
 
-  const deferredEmployee = await post(owner,"employee",{name:"Deferred absence QA "+randomUUID().slice(0,8),weeklySalary:"3000"});
+  const deferredEmployee = await post(owner,"employee",{name:"Deferred absence QA "+randomUUID().slice(0,8),startedAt:"2025-11-17",weeklySalary:"3000"});
   const deferredWeek = {...bookedWeek,employeeId:deferredEmployee};
   const earlyAdvance = await post(owner,"weeklyPayroll",{...deferredWeek,kind:"advance",amount:"200"});
   await setWeeklySalary(deferredEmployee,"");
   const firstSalary = await post(owner,"weeklyPayroll",{...deferredWeek,kind:"salaryPayment"});
   assert.equal((await db.payment.findUniqueOrThrow({where:{id:firstSalary}})).amount,280000n);
   assert.equal((await db.payment.findUniqueOrThrow({where:{id:earlyAdvance}})).amount,20000n);
-  const deferredId = await post(owner,"employeeAbsence",{employeeId:deferredEmployee,action:"mark"});
+  const deferredId = await post(owner,"employeeAbsence",{employeeId:deferredEmployee,action:"mark",day:nextWeek});
   assert.equal((await db.employeeAbsence.findUniqueOrThrow({where:{id:deferredId}})).deductionEntryId,null);
   await setWeeklySalary(deferredEmployee,"3600");
-  const nextPayout = {...deferredWeek,weekEnding:nextWeek,kind:"salaryPayment"};
+  const nextPayout = {...deferredWeek,weekEnding:nextWeek,at:nextWeek,kind:"salaryPayment"};
   assert.equal((await action(owner,"weeklyPayroll",{...nextPayout,expectedWeeklySalary:"300000"})).status,409);
   const deferredPayout = await post(owner,"weeklyPayroll",nextPayout);
   assert.equal((await db.payment.findUniqueOrThrow({where:{id:deferredPayout}})).amount,300000n);

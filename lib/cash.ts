@@ -2,11 +2,11 @@ import { PaymentKind, type Document, type Payment } from "@prisma/client";
 import { json, type Tx } from "./db";
 import { document, documentDates, snapshot, validParty } from "./documents";
 import { cents, choice, date, list, needed, requireRule, text, today } from "./rules";
-import { due, allocated } from "./trade";
+import { allocated, due, usedCredit, protectSettledCredits } from "./trade";
 import { number, type Actor, type Change } from "./transaction";
 import { checkVersion, type Input } from "./masters";
 import { openCustomerDebts } from "./customer-debt";
-import { payrollLocked, pendingAbsencesForWeek, requirePayrollOpen } from "./payroll-rules";
+import { payrollLocked, payrollPayday, payrollPeriodStarting, pendingAbsencesForWeek, requirePayrollOpen } from "./payroll-rules";
 import { accountPaymentMethods, isCustomPaymentMethod } from "./payment-options";
 
 const destinations: Partial<Record<PaymentKind, Document["kind"][]>>={
@@ -29,7 +29,7 @@ type PreparedAllocation = { documentId:string; amount:bigint };
 
 async function addAllocations(tx:Tx,payment:Payment,rows:PreparedAllocation[],receivedOn?:string){
   const existing=await tx.allocation.aggregate({where:{paymentId:payment.id,releasedAt:null},_sum:{amount:true}});
-  let available=payment.amount-(existing._sum.amount ?? 0n);
+  let available=payment.amount-(existing._sum.amount ?? 0n)-(payment.kind==="receipt"?await usedCredit(tx,{receiptId:payment.id}):0n);
   const recorded=[];
   const balances:Record<string,string>={};
   const documentTotals=new Map<string,bigint>();
@@ -39,6 +39,12 @@ async function addAllocations(tx:Tx,payment:Payment,rows:PreparedAllocation[],re
     requireRule(target && destinations[payment.kind]?.includes(target.kind) && target.status==="posted","invalidDocument");
     requirePayrollOpen(target);
     requireRule(target.partyId===payment.partyId && target.employeeId===payment.employeeId,"partyMismatch");
+    if (payment.kind==="salaryPayment" && target.kind==="payroll" && target.category==="weekly") {
+      const payday=payrollPayday(target);
+      const paidOn=today(payment.at);
+      requireRule(!payday || paidOn>=payday, "salaryBeforePayday");
+      requireRule(!payday || paidOn<=today(), "futurePayment");
+    }
     requireRule(!receivedOn || receivedOn>=today(target.at),"paymentBeforeInvoice");
     const before=await due(tx,target);
     requireRule(amount>0n && amount<=available && amount<=before,"amountMismatch");
@@ -58,7 +64,7 @@ export async function payment(tx:Tx,input:Input,actor:Actor):Promise<Change>{
   return postPayment(tx,input,actor);
 }
 
-async function postPayment(tx:Tx,input:Input,actor:Actor,debt?:{allocations:PreparedAllocation[]; balance:bigint}):Promise<Change>{
+export async function postPayment(tx:Tx,input:Input,actor:Actor,debt?:{allocations:PreparedAllocation[]; balance:bigint}, receiptPayout=false):Promise<Change>{
   const kind=choice(input.kind,Object.values(PaymentKind));
   const signed=kind==="cashOpening";
   const amount=cents(input.amount,signed);
@@ -78,7 +84,7 @@ async function postPayment(tx:Tx,input:Input,actor:Actor,debt?:{allocations:Prep
   const accountId=account.id;
   const at=date(input.at);
   const receivedOn=kind==="receipt"?today(at):undefined;
-  requireRule(!receivedOn || receivedOn<=today(),"futurePayment");
+  requireRule(!receivedOn && kind!=="refund" || today(at)<=today(),"futurePayment");
   const invoiceId=input.invoiceId===undefined?null:needed(input.invoiceId);
   requireRule(!invoiceId || kind==="receipt" && !debt && input.allocations===undefined,"invalidDocument");
   const rows=invoiceId ? [{documentId:invoiceId,amount}] : debt?.allocations ?? allocationInput(input.allocations ?? []);
@@ -101,8 +107,9 @@ async function postPayment(tx:Tx,input:Input,actor:Actor,debt?:{allocations:Prep
   const entry=await tx.payment.create({data:{number:await number(tx,kind),kind,at,amount,partyId,employeeId:staff,method,note,actorId:actor.id,
     snapshot:json({...await snapshot(tx,partyId,multiple ? null : target?.vehicleId,staff) as object,jobId,
       ...(kind==="receipt" && !rows.length ? {receiptTotal:String(amount)} : {})})}});
-  const {available,recorded,balances,total}=await addAllocations(tx,entry,rows,receivedOn);
-  requireRule(!["refund","supplierRefund","salaryPayment","expensePayment"].includes(kind) || available===0n,"allocationRequired");
+  const {available,recorded,balances,total}=await addAllocations(tx,entry,rows,kind==="refund"?today(at):receivedOn);
+  requireRule(!receiptPayout || kind==="refund" && !rows.length,"invalid");
+  requireRule(receiptPayout || !["refund","supplierRefund","salaryPayment","expensePayment"].includes(kind) || available===0n,"allocationRequired");
   requireRule(!["receipt","supplierPayment"].includes(kind) || available===0n || input.allowCredit===true,"allowCredit");
   const incoming=["receipt","supplierRefund","contribution","cashOpening"].includes(kind);
   const movements=[{paymentId:entry.id,accountId,amount:incoming?amount:-amount,actorId:actor.id,at}];
@@ -124,17 +131,15 @@ export async function customerDebtPayment(tx:Tx,input:Input,actor:Actor):Promise
   requireRule(amount>0n,"amountMismatch");
   const debts=await openCustomerDebts(tx,partyId);
   const balance=debts.reduce((sum,row)=>sum+row.balance,0n);
-  requireRule(amount<=balance,"debtOverpayment");
-
-  let unapplied=amount;
-  const allocations:PreparedAllocation[]=[];
-  for(const debt of debts){
-    if(unapplied===0n) break;
-    const applied=unapplied<debt.balance?unapplied:debt.balance;
-    allocations.push({documentId:debt.id,amount:applied});
-    unapplied-=applied;
+  requireRule(!(input.invoiceId!==undefined && input.allocations!==undefined),"invalidDocument");
+  const allocations=input.invoiceId===undefined?allocationInput(input.allocations ?? []):[{documentId:needed(input.invoiceId),amount}];
+  requireRule(allocations.length>0 && new Set(allocations.map(({documentId})=>documentId)).size===allocations.length,"selectDebtInvoice");
+  requireRule(allocations.reduce((sum,row)=>sum+row.amount,0n)===amount && allocations.every((entry)=>entry.amount>0n),"amountMismatch");
+  for(const entry of allocations){
+    const selected=debts.find((row)=>row.id===entry.documentId && (input.invoiceId===undefined || row.kind==="invoice"));
+    requireRule(selected && entry.amount<=selected.balance,"debtOverpayment");
   }
-  return postPayment(tx,{...input,kind:"receipt",partyId,jobId:undefined},actor,{allocations,balance:balance-amount});
+  return postPayment(tx,{...input,invoiceId:undefined,kind:"receipt",partyId,jobId:undefined,allowCredit:false},actor,{allocations,balance:balance-amount});
 }
 
 export async function allocate(tx:Tx,input:Input):Promise<Change>{
@@ -146,17 +151,13 @@ export async function allocate(tx:Tx,input:Input):Promise<Change>{
   const result=await addAllocations(tx,prior,rows);
   return {id,entity:"payment",before:prior.allocations,after:result};
 }
-async function protectsRefunds(tx:Tx, target:Document){
-  const notes=await tx.document.findMany({where:{sourceId:target.id,status:"posted",kind:{in:["credit","supplierCredit"]}}});
-  for(const entry of notes) requireRule(await due(tx,entry)>=0n,"refundFirst");
-}
 export async function unallocate(tx:Tx,input:Input):Promise<Change>{
   const id=needed(input.id);
   const before=await tx.allocation.findFirst({where:{id,releasedAt:null,payment:{reversedAt:null}},include:{document:true,payment:true}});
   requireRule(before && ["receipt","supplierPayment","advance"].includes(before.payment.kind),"invalidDocument");
   requirePayrollOpen(before.document);
   const after=await tx.allocation.update({where:{id},data:{releasedAt:new Date(),reason:needed(input.reason,1000)}});
-  await protectsRefunds(tx,before.document);
+  await protectSettledCredits(tx,before.documentId);
   return {id,entity:"allocation",before,after};
 }
 export async function reversePayment(tx:Tx,input:Input,actor:Actor):Promise<Change>{
@@ -168,8 +169,10 @@ export async function reversePayment(tx:Tx,input:Input,actor:Actor):Promise<Chan
   const reason=needed(input.reason,1000);
   const at=date(input.at);
   requireRule(at>=before.at,"invalidDate");
+  if(before.kind==="receipt") requireRule(await usedCredit(tx,{receiptId:id})===0n,"refundFirst");
   const after=await tx.payment.update({where:{id},data:{reversedAt:at,reverseReason:reason}});
-  for(const allocation of active) await protectsRefunds(tx,allocation.document);
+  await tx.customerCreditUse.updateMany({where:{payoutId:id,reversedAt:null},data:{reversedAt:at,reversedBy:actor.id,reverseReason:reason}});
+  for(const allocation of active) await protectSettledCredits(tx,allocation.documentId);
   await tx.cashMovement.createMany({data:before.movements.map((row)=>({
     paymentId:id,accountId:row.accountId,amount:-row.amount,actorId:actor.id,at,reversal:true,
   }))});
@@ -264,7 +267,7 @@ export async function payFinalize(tx:Tx,input:Input,actor:Actor):Promise<Change>
   if(input.version!==undefined) checkVersion(before,input);
   requireRule(await due(tx,before)===0n,"payrollBalanceDue",409);
   if (before.category==="weekly" && before.employeeId) {
-    requireRule(!await tx.employeeAbsence.findFirst({where:pendingAbsencesForWeek(before.employeeId,before.reference)}),
+    requireRule(!await tx.employeeAbsence.findFirst({where:pendingAbsencesForWeek(before.employeeId,before.reference,payrollPeriodStarting(before))}),
       "absenceDeductionPending",409);
   }
   const after=await tx.document.update({where:{id},data:{version:{increment:1},metadata:json({

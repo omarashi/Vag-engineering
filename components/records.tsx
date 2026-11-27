@@ -13,11 +13,14 @@ import { isItemizedVisitInvoice, visitWork, workshopIntake } from "@/lib/visit-i
 import { receiptDetails } from "@/lib/receipt-details";
 import { ReceiptItems } from "./receipt-items";
 import { clock, day, label, partCodeLabel, translate } from "@/lib/locale";
+import { today } from "@/lib/rules";
 import { invoiceReceiptForm, receiptAccounts } from "@/lib/visit-forms";
 import { ActionForm as ReceiptForm } from "./action-form";
 import type { ModuleProps } from "./modules";
 import { isWorkshopRecord } from "@/lib/permissions";
-import { payrollLocked } from "@/lib/payroll-rules";
+import { payrollLocked, payrollPayday } from "@/lib/payroll-rules";
+import { chargeLabels, isChargeType } from "@/lib/workshop-charges";
+import { invoicePaymentType } from "@/lib/invoice-settlement";
 
 type Props=ModuleProps&{id:string};
 export async function RecordView({lang,forms,id}:Props){
@@ -39,6 +42,8 @@ export async function RecordView({lang,forms,id}:Props){
   const reversible=creditable||["credit","supplierCredit","expense","employeeOpening","advanceOpening"].includes(row.kind);
   const due=BigInt(row.due ?? 0);
   const locked=payrollLocked(row);
+  const payday=row.kind==="payroll"&&row.category==="weekly" ? payrollPayday(row) : undefined;
+  const beforePayday=Boolean(payday && today()<payday);
   const receiptTargets=row.kind==="invoice"&&posted&&due>0n&&forms.can("payment") ? await receiptAccounts() : null;
   const canEditAttachments=work?forms.can("job"):forms.can("expense");
   const links=row.related.filter((item)=>finance||isWorkshopRecord(item.kind)).map((item)=>[
@@ -50,18 +55,21 @@ export async function RecordView({lang,forms,id}:Props){
   const payStatus=due===0n ? creditsIssued>0n?"settled":"paid" : partiallyPaid?"partial":"unpaid";
   return <><Heading lang={lang} title={row.number} description={label(lang,row.kind)+(row.title?" · "+row.title:"")}>
     <Badge lang={lang} value={row.status}/>{finance&&<PrintLink lang={lang} type="record" id={id}/>}
+    {row.kind==="invoice"&&row.partyId&&posted&&forms.can("customerRefund")&&BigInt(row.settlement?.adjusted ?? 0)>0n&&
+      <ButtonLink href={"/refunds?party="+row.partyId+"&invoice="+id}>{tr("Refund / Return")}</ButtonLink>}
+    {row.refundBatchId&&<ButtonLink href={"/refunds/"+row.refundBatchId}>{tr("Refund receipt")}</ButtonLink>}
     {receiptTargets && (receiptTargets.length
       ? <ReceiptForm lang={lang} spec={invoiceReceiptForm(lang,row,due,receiptTargets)} primary/>
       : <CashAccountSetup lang={lang} canManage={forms.can("account")} primary/>)}
     {finance&&work&&invoice&&<ButtonLink href={"/record/"+invoice.id}>{tr("View invoice")}</ButtonLink>}
     <Actions lang={lang} forms={forms} primary={!receiptTargets} specs={[
-      work&&row.status!=="cancelled"&&forms.jobUpdate(row),work&&row.status!=="cancelled"&&forms.assign(row),
+      work&&row.status!=="cancelled"&&forms.jobUpdate(row,!invoice),work&&row.status!=="cancelled"&&forms.assign(row),
       work&&!["delivered","cancelled"].includes(row.status)&&!invoice&&forms.jobStock(row),
       work&&row.status!=="cancelled"&&!invoice&&forms.invoice(row),
       work&&row.status!=="cancelled"&&!invoice&&forms.payment(undefined,row),
       row.kind==="purchaseOrder"&&row.status==="draft"&&forms.purchase("purchase",row),
-      payable&&!locked&&row.kind!=="invoice"&&posted&&due>0n&&forms.payment(row),
-      creditable&&posted&&forms.credit(row),
+      payable&&!locked&&!beforePayday&&row.kind!=="invoice"&&posted&&due>0n&&forms.payment(row),
+      creditable&&row.kind!=="invoice"&&posted&&forms.credit(row),
       reversible&&posted&&forms.reverse(row),
       row.kind==="payroll"&&!locked&&forms.payEntry(row),
       row.kind==="payroll"&&!locked&&due===0n&&forms.payFinalize(row),
@@ -69,6 +77,7 @@ export async function RecordView({lang,forms,id}:Props){
     ]}/>
   </Heading><div className="detail-stack">
     {locked&&due>0n&&<p className="notice">{tr("A finalized period with a balance needs Owner review.")}</p>}
+    {beforePayday&&due>0n&&<p className="notice">{tr("Salary can be recorded from Saturday, the end of the pay week.")}</p>}
     <Info lang={lang} items={[
       ["Date",day(lang,row.at)],["Due date",finance&&row.dueAt?day(lang,row.dueAt):null],
       ["Customer",row.party&&row.party.kind==="customer"?<Ref href={"/customers/"+row.party.id}>{snap.party?.name ?? row.party.name}</Ref>:null],
@@ -79,9 +88,13 @@ export async function RecordView({lang,forms,id}:Props){
       ["Related documents",row.source&&(finance||isWorkshopRecord(row.source.kind))?<Ref href={sourcePath+row.source.id}>{row.source.number}</Ref>:null],
       ["Category",row.category],["Notes",row.note],
       [row.kind==="invoice"?"Invoice total":"Total",finance&&!work?<Amt lang={lang} value={row.total}/>:null],
-      ["Payments received",finance&&row.settlement?<Amt lang={lang} value={row.settlement.received}/>:null],
+      ["Payment type",finance&&row.settlement?tr(invoicePaymentType(row.settlement.balance,row.settlement.paid)):null],
+      ["Amount paid",finance&&row.settlement?<Amt lang={lang} value={row.settlement.paid}/>:null],
       ["Credits issued",finance&&creditsIssued>0n?<Amt lang={lang} value={creditsIssued}/>:null],
-      ["Amount due",finance&&row.due!=null?<Amt lang={lang} value={row.due}/>:null],
+      ["Adjusted invoice total",finance&&creditsIssued>0n&&row.settlement?<Amt lang={lang} value={row.settlement.adjusted}/>:null],
+      ["Applied customer credit",finance&&row.settlement&&BigInt(row.settlement.applied)>0n?<Amt lang={lang} value={row.settlement.applied}/>:null],
+      ["Available customer credit",finance&&row.settlement&&BigInt(row.settlement.availableCredit)>0n?<Amt lang={lang} value={row.settlement.availableCredit}/>:null],
+      [row.kind==="invoice"?"Remaining balance":"Amount due",finance&&row.due!=null?<Amt lang={lang} value={row.due}/>:null],
       ["Payments",finance&&payable&&posted&&!["credit","supplierCredit"].includes(row.kind)?<Badge lang={lang} value={payStatus}/>:null],
       ["Status",row.kind==="payroll"?tr(locked?"Finalized":"Open"):null],
     ]}/>
@@ -94,8 +107,10 @@ export async function RecordView({lang,forms,id}:Props){
     {!!row.lines.length&&<Panel title={tr("Line items")}><Register lang={lang} head={[
       "Type","Description","Quantity",...(finance?[itemizedVisit?"Unit price":"Price","Discount","Total","Cost"]:[]),
     ]} rows={row.lines.map((line)=>{
-      const item=itemizedVisit&&line.kind==="service"?billedWork[line.position]:undefined;
-      return [label(lang,line.kind),item?<VisitServiceDescription lang={lang} work={item}/>:<bdi>{line.description}</bdi>,String(line.quantity),
+      const item=itemizedVisit&&line.kind==="service"&&!line.purpose?billedWork[line.position]:undefined;
+      const description=isChargeType(line.purpose)?tr(chargeLabels[line.purpose]):line.description;
+      return [line.purpose==="importedItem"?tr("Import"):label(lang,line.kind),item?<VisitServiceDescription lang={lang} work={item}/>:
+        <><bdi>{description}</bdi>{finance&&line.supplierName&&<small><bdi>{line.supplierName}</bdi></small>}</>,String(line.quantity)==="0"?"—":String(line.quantity),
         ...(finance?[<Amt lang={lang} value={line.price}/>,<Amt lang={lang} value={line.discount}/>,<Amt lang={lang} value={line.total}/>,<Amt lang={lang} value={line.costTotal}/>]:[])];
     })}/></Panel>}
     {!!links.length&&<Panel title={tr("Related documents")}><Register lang={lang} head={["Number","Type","Status"]} rows={links}/></Panel>}
@@ -127,18 +142,21 @@ export async function PaymentView({lang,forms,id}:Props){
   const open=!row.reversedAt;
   const hasLockedAllocation=row.allocations.some(item=>!item.releasedAt&&payrollLocked(item.document));
   const receipt=await receiptDetails(row);
-  const unallocated=BigInt(row.amount)-row.allocations.filter((item)=>!item.releasedAt).reduce((sum,item)=>sum+BigInt(item.amount),0n);
+  const creditUsed=row.creditUses.filter((item)=>!item.reversedAt).reduce((sum,item)=>sum+BigInt(item.amount),0n);
+  const unallocated=BigInt(row.amount)-row.allocations.filter((item)=>!item.releasedAt).reduce((sum,item)=>sum+BigInt(item.amount),0n)-creditUsed;
   const allocations=row.allocations.length>0&&<Register lang={lang} head={["Document","Amount","Status","Action"]} rows={row.allocations.map((item)=>[
     <Ref href={"/record/"+item.documentId}>{item.document.number}</Ref>,<Amt lang={lang} value={item.amount}/>,<Badge lang={lang} value={item.releasedAt||!open?"reversed":"posted"}/>,
     open&&!item.releasedAt&&!payrollLocked(item.document)&&forms.can("unallocate")&&["receipt","supplierPayment","advance"].includes(row.kind)?<ActionForm lang={lang} spec={forms.unallocate(item.id)}/>:null,
   ])}/>;
   return <><Heading lang={lang} title={row.number} description={label(lang,row.kind)}><PrintLink lang={lang} type="payment" id={id} text={row.kind==="receipt"?"Print receipt":undefined}/>
+    {row.kind==="refund"&&row.allocations.some((entry)=>entry.document.refundBatchId)&&<ButtonLink href={"/refunds/"+row.allocations.find((entry)=>entry.document.refundBatchId)?.document.refundBatchId}>{tr("Refund receipt")}</ButtonLink>}
     {row.kind==="receipt"&&row.partyId&&<ButtonLink href={"/customers/"+row.partyId+"#customer-balance"}>{tr("Customer balance")}</ButtonLink>}
     <Actions lang={lang} forms={forms} specs={[open&&unallocated>0n&&["receipt","supplierPayment","advance"].includes(row.kind)&&forms.allocate(row),open&&!hasLockedAllocation&&forms.reverse(row,true)]}/>
   </Heading><div className="detail-stack"><Info lang={lang} items={[
     ["Date",day(lang,row.at)],["Name",row.party?.name ?? row.employee?.name],["Amount",receipt?null:<Amt lang={lang} value={row.amount}/>],["Payment method",label(lang,row.method)],
     ["Status",<Badge lang={lang} value={open?"posted":"reversed"}/>],["Unapplied",["receipt","supplierPayment","advance"].includes(row.kind)&&open?<Amt lang={lang} value={unallocated}/>:null],
     ["Notes",row.note],["Reason",row.reverseReason],
+    ["Credit source",row.creditRefund?.receipt?<Ref href={"/payment/"+row.creditRefund.receipt.id}>{row.creditRefund.receipt.number}</Ref>:null],
   ]}/>
   {receipt&&<Panel title={tr("Receipt details")} className="receipt-details"><ReceiptItems lang={lang} details={receipt}/></Panel>}
   {!receipt&&<Panel title={tr("Money movements")}><Register lang={lang} head={["Date","Account","Amount","Status"]} rows={row.movements.map((item)=>[

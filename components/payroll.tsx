@@ -4,8 +4,8 @@ import type { Document, Employee } from "@prisma/client";
 import { db, plain } from "@/lib/db";
 import { day, money, translate, type Language } from "@/lib/locale";
 import { absenceDate, employedOn, employeeWeekEnding, payrollReviews, payrollSummary, payrollWeek, pendingAbsencesForWeek, selectedWeekEnding, weekStarting, weeklyRecord, workWeekStarting, workedDuringWeek } from "@/lib/payroll";
-import { addDays, today } from "@/lib/rules";
-import { payrollLocked } from "@/lib/payroll-rules";
+import { addDays, cairoDayStart, today } from "@/lib/rules";
+import { currentWeekEnding, payrollLocked, payrollPayday, payrollPeriodStarting } from "@/lib/payroll-rules";
 import { documents, payments } from "@/lib/views";
 import { AbsenceToggle } from "./absence-toggle";
 import { ActionForm, type ActionSpec, type Field } from "./action-form";
@@ -29,6 +29,8 @@ function payrollForm({ kind, employee, selected, payVia, lang }: {
   const date = today();
   const deduction = kind === "deduction";
   const { week, period, remaining, pendingAbsence } = selected;
+  const payday = period ? payrollPayday(period) : week;
+  const start = today(employee.startedAt);
   const showWeek = !period && kind !== "salaryPayment";
   return {
     action: "weeklyPayroll", title: actionTitles[kind],
@@ -49,7 +51,8 @@ function payrollForm({ kind, employee, selected, payVia, lang }: {
         key: "amount", label: "Amount (EGP)", required: true, wide: true, ltr: true, inputMode: "decimal" as const,
       }] : []),
       ...(!deduction ? [payVia] : []),
-      { key: "at", label: "Date", type: "date", value: date, min: today(employee.startedAt), max: date, required: true, ltr: true },
+      { key: "at", label: "Date", type: "date", value: date, min: kind === "salaryPayment" && payday && payday > start ? payday : start,
+        max: date, required: true, ltr: true },
       { key: "note", label: deduction ? "Reason" : "Notes", type: "textarea", wide: true, required: deduction },
     ],
   };
@@ -93,12 +96,16 @@ export async function Payroll({ lang, forms, query }: ModuleProps) {
   const now = today();
   const start = workWeekStarting(query.week ? selectedWeekEnding(query.week) : now);
   const days = Array.from({length:6},(_,index)=>addDays(start,index));
-  const saturday = days[5];
-  const friday = days[4];
-  const markedDay = query.date && days.includes(query.date) && query.date <= now ? query.date : now < start ? "" : now > saturday ? saturday : now;
-  const [people,reviews,archived] = await Promise.all([
+  const saturday = currentWeekEnding(start);
+  const markedDay = query.date && days.includes(query.date) && query.date <= now ? query.date :
+    days.includes(now) ? now : now > addDays(saturday,1) ? saturday : "";
+  const [people,reviews,upcoming,archived] = await Promise.all([
     payrollWeek(start,query.staff,query.q),
     payrollReviews(query.staff),
+    start===workWeekStarting(now) ? db.employee.findMany({where:{
+      id:query.staff||undefined, name:query.q?{contains:query.q,mode:"insensitive"}:undefined,
+      archived:false, startedAt:{gte:cairoDayStart(addDays(saturday,1))},
+    },select:{id:true,name:true,startedAt:true},orderBy:[{startedAt:"asc"},{name:"asc"}]}) : [],
     db.employee.findMany({where:{archived:true},select:{id:true,name:true},orderBy:{name:"asc"}}),
   ]);
   const t = (key: string) => translate(lang, key);
@@ -106,7 +113,7 @@ export async function Payroll({ lang, forms, query }: ModuleProps) {
   const weekLabels = days.map(value=>name.format(absenceDate(value))+" "+day(lang,absenceDate(value),"short"));
   const rows=people.map(employee=>{
     const period=employee.documents[0] ?? null;
-    const week=period?.reference ?? friday;
+    const week=period?.reference ?? saturday;
     const summary=payrollSummary(employee,period);
     const options=employee.absences.find(row=>today(row.day)===markedDay);
     const absenceDays=employee.absences.filter(row=>!row.halfDay).length;
@@ -154,7 +161,9 @@ export async function Payroll({ lang, forms, query }: ModuleProps) {
     rows.reduce((sum,row)=>sum+row.absenceDays,0),rows.reduce((sum,row)=>sum+row.halfDays,0),
     ...moneyCells(totals),
   ]);
-  return <><Heading lang={lang} title="Employees & payroll"><Actions lang={lang} forms={forms} specs={[forms.employee()]} auto={query.new}/></Heading>
+  return <><Heading lang={lang} title="Employees & payroll" description={t("Monday to Saturday · Payday is Saturday · Sunday off")}>
+    <Actions lang={lang} forms={forms} specs={[forms.employee()]} auto={query.new}/>
+  </Heading>
     <div className="detail-stack">
       <Panel title={t("Weekly payroll sheet")}>
         <Form key={start+markedDay+query.staff+query.q} action="/payroll" prefetch={false} className="toolbar">
@@ -182,6 +191,11 @@ export async function Payroll({ lang, forms, query }: ModuleProps) {
         ]} rows={cells}/>
       </Panel>
       <PayrollReviewPanel lang={lang} reviews={reviews} destination={"/payroll?week="+start}/>
+      {upcoming.length>0 && <Panel title={t("Upcoming employee starts")}>
+        <Register lang={lang} head={["Employee","Start date"]} rows={upcoming.map(row=>[
+          <Ref href={"/payroll/"+row.id}>{row.name}</Ref>,day(lang,row.startedAt),
+        ])}/>
+      </Panel>}
       {archived.length>0 && <Panel title={t("Archived employees")}>
         <ul className="log-list">{archived.map(row=><li className="detail-copy" key={row.id}><Ref href={"/payroll/"+row.id}>{row.name}</Ref></li>)}</ul>
       </Panel>}
@@ -191,34 +205,38 @@ export async function Payroll({ lang, forms, query }: ModuleProps) {
 
 export async function EmployeeView({ lang, forms, id, query }: ModuleProps & { id: string }) {
   const date = today();
-  const week = query.week ? selectedWeekEnding(query.week) : await employeeWeekEnding(id, date);
-  const firstDay = weekStarting(week);
-  const [employee, period, docs, pays, pendingDays, reviews] = await Promise.all([
+  const [employee, docs, pays, reviews] = await Promise.all([
     db.employee.findUnique({ where: { id }, include: {
       rates: { orderBy: { effectiveAt: "desc" } },
       absences: { orderBy: { day: "desc" }, take: 60, include: {
         deductionEntry: { select: { amount: true, document: { select: { reference: true } } } },
       } },
     } }),
-    weeklyRecord(id, week), documents(["payroll","employeeOpening","advanceOpening"], {staff:id}), payments({staff:id}),
-    db.employeeAbsence.count({where:pendingAbsencesForWeek(id,week)}),
+    documents(["payroll","employeeOpening","advanceOpening"], {staff:id}), payments({staff:id}),
     payrollReviews(id),
   ]);
   if (!employee) notFound();
+  const start = today(employee.startedAt);
+  const notStarted = date < start;
+  const week = await employeeWeekEnding(id, query.week ? selectedWeekEnding(query.week) : notStarted ? start : date);
+  const period = await weeklyRecord(id,week);
+  const firstDay = period ? payrollPeriodStarting(period) : weekStarting(week);
+  const pendingAbsence = (await db.employeeAbsence.count({where:pendingAbsencesForWeek(id,week,firstDay)})) > 0;
   const t = (key: string) => translate(lang, key);
   const path = "/payroll/" + id;
   const active = employedOn(employee, date);
   const attendance = employee.absences.find(row => today(row.day) === date && !row.voidedAt);
   const {gross,advances,paid,deductions,remaining} = payrollSummary(employee,period);
-  const pendingAbsence = pendingDays > 0;
   const mayManage = forms.can("weeklyPayroll");
-  const editable = mayManage && (period ? remaining > 0n : workedDuringWeek(employee, week));
+  const editable = mayManage && !notStarted && (period ? remaining > 0n : workedDuringWeek(employee, week));
   const selected: PayWeek = { week, period, remaining, pendingAbsence };
   const hasSalary = (employee.weeklySalary ?? 0n) > 0n;
   const needSalary = !hasSalary && editable && !period;
   const locked = period && payrollLocked(period);
-  const mayPay = !locked && editable && (period !== null || hasSalary);
-  const mayAdjust = mayPay;
+  const mayAdjust = !locked && editable && (period !== null || hasSalary);
+  const payday = period ? payrollPayday(period) : week;
+  const beforePayday = Boolean(payday && date < payday);
+  const mayPay = mayAdjust && !beforePayday;
   const accounts = forms.adapters.accounts;
   const payrollAction = (kind: PayrollAction) => <ActionForm key={week+kind} lang={lang} primary={kind==="salaryPayment"}
     spec={payrollForm({ kind, employee, selected, payVia:forms.adapters.payVia, lang })}/>;
@@ -231,7 +249,7 @@ export async function EmployeeView({ lang, forms, id, query }: ModuleProps & { i
       { key: "reason", label: "Reason", type: "textarea", required: true, wide: true },
     ],
   };
-  return <><Heading lang={lang} title={employee.name} description={t(active ? attendance ? attendance.halfDay ? "Half-day deduction" : "Absent today" : "Active" : employee.dismissalReason ? "Dismissed" : "Inactive")}>
+  return <><Heading lang={lang} title={employee.name} description={t(active ? attendance ? attendance.halfDay ? "Half-day deduction" : "Absent today" : "Active" : employee.dismissalReason ? "Dismissed" : notStarted ? "Not started" : "Inactive")}>
     <ButtonLink href="/payroll">{t("Employees & payroll")}</ButtonLink>
     {active && absenceDate(date).getUTCDay()!==0 && forms.can("employeeAbsence")
       && <AbsenceToggle employeeId={id} state={attendance ? attendance.halfDay?"halfDay":"mark":undefined} lang={lang}/>}
@@ -254,6 +272,7 @@ export async function EmployeeView({ lang, forms, id, query }: ModuleProps & { i
             <div><dt>{t("Remaining salary")}</dt><dd><Amt lang={lang} value={period ? remaining : null}/></dd></div>
           </dl>
           {needSalary && <p className="notice">{t("Set the weekly salary in Edit profile to open a pay week.")}</p>}
+          {mayAdjust && beforePayday && <p className="notice">{t("Salary can be recorded from Saturday, the end of the pay week.")}</p>}
           {pendingAbsence && <p className="notice">{t("Absence deduction pending")}</p>}
           {locked && remaining>0n &&
             <p className="notice">{t("A finalized period with a balance needs Owner review.")}</p>}
@@ -280,14 +299,14 @@ export async function EmployeeView({ lang, forms, id, query }: ModuleProps & { i
           <Ref href={path+"?week="+row.deductionEntry.document.reference}>{day(lang,absenceDate(row.deductionEntry.document.reference))}</Ref> : null,
       ])}/></Panel>
       <Info lang={lang} items={[
-        ["Phone",employee.phone],["Pay arrangement",employee.arrangement],["Rate",<Amt lang={lang} value={employee.rate}/>],
+        ["Phone",employee.phone],["Pay arrangement",employee.arrangement],
         ["Paid days per week",employee.paidDaysPerWeek],
         ["Start date",day(lang,employee.startedAt)],["End date",employee.endedAt?day(lang,employee.endedAt):null],
         ["Dismissal reason",employee.dismissalReason],["Notes",employee.note],
       ]}/>
-      <Panel title={t("Rate history")}><Register lang={lang} head={["Effective date","Pay arrangement","Rate"]} rows={employee.rates.map(item=>[
+      {employee.rates.some(item=>item.amount!==0n) && <Panel title={t("Rate history")}><Register lang={lang} head={["Effective date","Pay arrangement","Rate"]} rows={employee.rates.map(item=>[
         day(lang,item.effectiveAt),<bdi>{item.arrangement}</bdi>,<Amt lang={lang} value={item.amount}/>,
-      ])}/></Panel>
+      ])}/></Panel>}
     </div>
   </>;
 }

@@ -9,7 +9,7 @@ export const financeActions = [
   "supplier", "employee", "part", "stock", "supplierStock", "supplierQuote", "purchaseOrder", "purchase",
   "invoice", "visitInvoice", "visitReceipt", "customerDebtPayment", "expense", "paidExpense", "opening", "openingFinalize", "payPeriod",
   "payEntry", "payFinalize", "employeeAbsence", "weeklyPayroll", "resolvePayrollExcess", "credit", "reverseDocument", "payment", "allocate", "unallocate",
-  "reversePayment",
+  "reversePayment", "customerRefund", "customerCreditApply", "customerCreditPayout", "reverseCustomerCredit",
 ] as const;
 export const ownerActions = ["settings", "user", "account", "catalogue", "employeeDismiss", "payReopen"] as const;
 export type Command = typeof workshopActions[number] | typeof financeActions[number] | typeof ownerActions[number];

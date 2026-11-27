@@ -1,0 +1,41 @@
+services:
+  db:
+    restart: unless-stopped
+    logging: &bounded_logs
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  app:
+    environment:
+      PHOTO_STORAGE_PATH: /mnt/vag-data/vehicle-photos
+      PHOTO_STORAGE_VOLUME_ID: ${PHOTO_STORAGE_VOLUME_ID:?Set the Oracle photo filesystem UUID}
+    volumes:
+      - &photo_disk
+        type: bind
+        source: ${VAG_DATA_MOUNT:-/mnt/vag-data}
+        target: /mnt/vag-data
+        bind:
+          create_host_path: false
+    logging: *bounded_logs
+  backup:
+    environment: &photo_backup_env
+      PHOTO_ROOT: /mnt/vag-data/vehicle-photos
+      PHOTO_STORAGE_VOLUME_ID: ${PHOTO_STORAGE_VOLUME_ID:?Set the Oracle photo filesystem UUID}
+    volumes:
+      - <<: *photo_disk
+        read_only: true
+      - &backup_staging
+        type: bind
+        source: ${VAG_DATA_MOUNT:-/mnt/vag-data}/backup-staging
+        target: /backups
+        read_only: false
+        bind:
+          create_host_path: false
+  restore:
+    environment:
+      <<: *photo_backup_env
+      TMPDIR: /backups
+    volumes:
+      - *photo_disk
+      - *backup_staging

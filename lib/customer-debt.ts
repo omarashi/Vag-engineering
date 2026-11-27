@@ -1,16 +1,17 @@
 import { Prisma } from "@prisma/client";
 import type { Tx } from "./db";
 
-type DebtDocument = {
+export type DebtDocument = {
   id: string; number: string; at: Date; total: bigint;
-  kind: "invoice" | "customerOpening"; balance: bigint;
+  kind: "invoice" | "customerOpening"; balance: bigint; paid: bigint; credited: bigint; applied: bigint;
 };
 type CustomerBalance = { id: string; name: string; phone: string; archived: boolean; balance: bigint };
 
 function debtDocuments(customerFilter: Prisma.Sql) {
   return Prisma.sql`
     SELECT d.id, d."partyId", d.number, d.at, d.total, d.kind::text AS kind,
-      (d.total - COALESCE(paid.total, 0) - COALESCE(credits.total, 0))::bigint AS balance
+      COALESCE(paid.total, 0)::bigint AS paid, COALESCE(credits.total, 0)::bigint AS credited, COALESCE(applied.total, 0)::bigint AS applied,
+      (d.total - COALESCE(paid.total, 0) - COALESCE(credits.total, 0) - COALESCE(applied.total, 0))::bigint AS balance
     FROM "Document" d
     LEFT JOIN LATERAL (
       SELECT SUM(a.amount) AS total FROM "Allocation" a
@@ -21,13 +22,16 @@ function debtDocuments(customerFilter: Prisma.Sql) {
       SELECT SUM(c.total) AS total FROM "Document" c
       WHERE c."sourceId" = d.id AND c.status = 'posted' AND c.kind IN ('credit', 'supplierCredit')
     ) credits ON true
+    LEFT JOIN LATERAL (
+      SELECT SUM(u.amount) AS total FROM "CustomerCreditUse" u WHERE u."invoiceId"=d.id AND u."reversedAt" IS NULL
+    ) applied ON true
     WHERE d.status = 'posted' AND d.kind IN ('invoice', 'customerOpening') AND ${customerFilter}
   `;
 }
 
 export function openCustomerDebts(tx: Tx, partyId: string) {
   return tx.$queryRaw<DebtDocument[]>`
-    SELECT id, number, at, total, kind, balance
+    SELECT id, number, at, total, kind, balance, paid, credited, applied
     FROM (${debtDocuments(Prisma.sql`d."partyId" = ${partyId}`)}) AS debt
     WHERE balance > 0
     ORDER BY at, number

@@ -1,4 +1,4 @@
-import { CarFront, ChartNoAxesCombined, FileText, History, Landmark, Package, Receipt, Settings2, Truck, UsersRound, Wallet } from "lucide-react";
+import { CarFront, ChartNoAxesCombined, FileText, History, Landmark, Package, Receipt, Settings2, Truck, UsersRound, Wallet, Zap } from "lucide-react";
 import Link from "./navigation-link";
 import { notFound, redirect } from "next/navigation";
 import type { Actor } from "@/lib/transaction";
@@ -20,11 +20,14 @@ import { SupplierPriceList } from "./supplier-price-list";
 import { activeCustomers, visitPartOptions } from "@/lib/visit-forms";
 import { can, canViewPage } from "@/lib/permissions";
 import { today } from "@/lib/rules";
+import { ElectricalWork, Imports } from "./workshop-invoice-reports";
+import { RefundReceipt, Refunds } from "./refunds";
 
 const sections = [
   { title: "Workshop and sales", tools: [
     ["invoices", "Invoices", FileText],
     ["receipts", "Receipts", Receipt], ["vehicles", "Cars", CarFront], ["inventory", "Inventory", Package], ["purchasing", "Suppliers & purchasing", Truck],
+    ["imports", "Imports", Truck], ["electrical-work", "Electrical work", Zap], ["refunds", "Refund / Return", Receipt],
   ] },
   { title: "Money and people", tools: [
     ["balances", "Balances & credits", Landmark], ["cash", "Cash & expenses", Wallet], ["payroll", "Employees & payroll", UsersRound],
@@ -63,6 +66,7 @@ async function Receipts({ lang, forms: actions, query }: { lang: Language; forms
 
 export async function OfficePage({ lang, route, id, actor, query }: { lang: Language; route: string; id?: string; actor: Actor; query: Query }) {
   if (route === "more" && !id) return <More lang={lang} role={actor.role}/>;
+  if(route==="refunds")return id?<RefundReceipt lang={lang} id={id}/>:<Refunds lang={lang} partyId={query.party} invoiceId={query.invoice}/>;
   if (route === "counter-sale" && !id && can(actor.role, "invoice")) {
     const [customers, parts] = await Promise.all([activeCustomers(), visitPartOptions(lang)]);
     return <><Heading lang={lang} title="Counter sale"><ButtonLink href="/invoices">{translate(lang, "Invoices")}</ButtonLink></Heading>
@@ -118,6 +122,8 @@ export async function OfficePage({ lang, route, id, actor, query }: { lang: Lang
     case "invoices": return <Invoices {...props}/>;
     case "inventory": return <Inventory {...props}/>;
     case "purchasing": return <Purchasing {...props}/>;
+    case "imports": return <Imports {...props}/>;
+    case "electrical-work": return <ElectricalWork {...props}/>;
     case "balances": return <Balances {...props}/>;
     case "cash": return <Cash {...props}/>;
     case "payroll": return <Payroll {...props}/>;

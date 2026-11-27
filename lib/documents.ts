@@ -1,4 +1,4 @@
-import { Prisma, type DocumentKind } from "@prisma/client";
+import { Prisma, type DocumentKind, type LinePurpose } from "@prisma/client";
 import { type Tx, json } from "./db";
 import { cents, choice, date, extended, list, needed, requireRule, text, units } from "./rules";
 import { number, type Actor } from "./transaction";
@@ -6,13 +6,15 @@ import { number, type Actor } from "./transaction";
 export const lineKinds = ["labor","service","part","supplied"] as const;
 export type LineData = {
   kind: typeof lineKinds[number]; description:string; partId:string|null; sourceId?:string;
+  purpose?: LinePurpose | null; supplierId?: string | null; supplierName?: string; buyingPrice?: bigint | null;
+  returnDisposition?: string;
   quantity:Prisma.Decimal; price:bigint; discount:bigint; total:bigint; costTotal?:bigint; stockQty?:Prisma.Decimal; position:number;
 };
-export async function lines(tx: Tx, input: unknown, { onlyParts = false, issuedPartIds = [] }: {
-  onlyParts?: boolean; issuedPartIds?: string[];
+export async function lines(tx: Tx, input: unknown, { onlyParts = false, issuedPartIds = [], allowEmpty = false }: {
+  onlyParts?: boolean; issuedPartIds?: string[]; allowEmpty?: boolean;
 } = {}): Promise<LineData[]> {
   const rows = list(input ?? []);
-  requireRule(rows.length > 0, "needLines");
+  requireRule(allowEmpty || rows.length > 0, "needLines");
   const ids = [...new Set(rows.flatMap((row) => row.kind === "part" ? [needed(row.partId)] : []))];
   const parts = await tx.part.findMany({where:{id:{in:ids},OR:[{archived:false},{id:{in:issuedPartIds}}]}});
   return rows.map((row,position) => {

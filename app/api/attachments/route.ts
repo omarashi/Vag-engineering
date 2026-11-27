@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { mutationUser } from "@/lib/auth";
 import { requireRule, RuleError } from "@/lib/rules";
 import { audit, lockedMutation, priorRequest, recordRequest, requireRequestKey } from "@/lib/transaction";
-import { attachmentLimit, attachmentRoot, signature } from "@/lib/storage";
+import { attachmentLimit, attachmentRoot, photoKeyPrefix, signature, workshopPhotoRoot } from "@/lib/storage";
 import { workshopPhotosOn } from "@/lib/workshop-photos";
 import { workshopPhotoLimit, workshopPhotoMaxBytes } from "@/lib/workshop-photo-limits";
 import { canAccessAttachment, isWorkshopRecord } from "@/lib/permissions";
@@ -58,17 +58,23 @@ export async function POST(request: Request) {
         requireRule(count + uploads.length <= workshopPhotoLimit, "photoLimit", 409);
       }
 
-      const root = attachmentRoot();
-      await mkdir(root, { recursive: true });
+      const photoRoot = photos ? await workshopPhotoRoot(true) : null;
+      const root = photoRoot ?? attachmentRoot();
+      if (!photoRoot) await mkdir(root, { recursive: true });
       for (const { body, mime, name } of uploads) {
-        const key = randomUUID();
+        const key = photoRoot ? photoKeyPrefix + randomUUID() : randomUUID();
         const path = join(root, key);
-        const handle = await open(path, "wx", 0o600);
-        written.push(path);
         try {
-          await handle.writeFile(body);
-        } finally {
-          await handle.close();
+          const handle = await open(path, "wx", 0o600);
+          written.push(path);
+          try {
+            await handle.writeFile(body);
+          } finally {
+            await handle.close();
+          }
+        } catch (error) {
+          if (photoRoot) throw new RuleError("photoStorageUnavailable", 503);
+          throw error;
         }
         const row = await tx.attachment.create({ data: {
           documentId: document?.id, vehicleId: vehicle?.id, name, mime, size: body.length, key, actorId: actor.id,

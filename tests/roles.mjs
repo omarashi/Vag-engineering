@@ -112,7 +112,7 @@ try {
   const counterSale = await db.document.findUniqueOrThrow({ where: { id: counterSaleId } });
   assert.equal(counterSale.vehicleId, null);
   assert.equal(counterSale.total, 17000n);
-  await action(accountant, "customerDebtPayment", { partyId: counterSale.partyId, amount: "70", at: day, accountId: drawer.id, method: "cash" });
+  await action(accountant, "customerDebtPayment", { partyId: counterSale.partyId, invoiceId:counterSaleId, amount: "70", at: day, accountId: drawer.id, method: "cash" });
   const invoice = await db.document.findFirstOrThrow({ where: { kind: "invoice", sourceId: jobId } });
   const receiptPath = "/print/payment/" + receiptId + "?lang=en";
   assert.match(await page(accountant, receiptPath), /277\.32/);

@@ -11,6 +11,8 @@ import { ReceiptItems } from "@/components/receipt-items";
 import { receiptDetails } from "@/lib/receipt-details";
 import { carName } from "@/lib/car-name";
 import { can } from "@/lib/permissions";
+import { invoicePaymentType } from "@/lib/invoice-settlement";
+import { RefundReceipt } from "@/components/refunds";
 
 type Snapshot={business?:{name:string;phone?:string;address?:string;footer?:string;logo?:string;dateFormat?:"short"|"medium"|"long"};
   party?:{name:string;phone?:string;address?:string};employee?:{name:string;phone?:string};vehicle?:{plate?:string;make?:string;model?:string;color?:string}};
@@ -20,6 +22,7 @@ export default async function Page({params,searchParams}:{params:Promise<{type:s
   if(!actor)redirect("/login");
   if(!can(actor.role,"payment"))notFound();
   const lang=query.lang==="ar"?"ar":"en";
+  if(type==="refund")return <RefundReceipt lang={lang} id={id} print/>;
   const tr=(name:string)=>translate(lang,name);
   const [doc,pay,account]=await Promise.all([type==="record"?documentDetail(id):null,type==="payment"?payments({},id).then((rows)=>rows[0]):null,type==="statement"?statement(id):null]);
   if(doc?.kind==="appointment" || !doc&&!pay&&!account)notFound();
@@ -81,24 +84,40 @@ export default async function Page({params,searchParams}:{params:Promise<{type:s
           row.payment.number,format(row.payment.at),label(lang,row.payment.kind),amt(row.amount),label(lang,row.releasedAt||row.payment.reversedAt?"reversed":"posted"),
         ])}/>}
         <p><strong>{tr(doc.kind==="invoice"?"Invoice total":"Total")}</strong> <bdi>{amt(doc.total)}</bdi></p>
-        {doc.settlement&&<p><strong>{tr("Payments received")}</strong> <bdi>{amt(doc.settlement.received)}</bdi></p>}
+        {doc.settlement&&<p><strong>{tr("Payment type")}</strong> {tr(invoicePaymentType(doc.settlement.balance,doc.settlement.paid))}</p>}
+        {doc.settlement&&<p><strong>{tr("Amount paid")}</strong> <bdi>{amt(doc.settlement.paid)}</bdi></p>}
+        {doc.settlement&&BigInt(doc.settlement.refunded)>0n&&<p><strong>{tr("Refunds paid")}</strong> <bdi>{amt(doc.settlement.refunded)}</bdi></p>}
         {doc.settlement&&BigInt(doc.settlement.credited)>0n&&<p><strong>{tr("Credits issued")}</strong> <bdi>{amt(doc.settlement.credited)}</bdi></p>}
-        {doc.due!=null&&<p><strong>{tr("Amount due")}</strong> <bdi>{amt(doc.due)}</bdi></p>}
+        {doc.settlement&&BigInt(doc.settlement.credited)>0n&&<p><strong>{tr("Adjusted invoice total")}</strong> <bdi>{amt(doc.settlement.adjusted)}</bdi> · <bdi>{doc.settlement.notes.map((row)=>row.number).join(" · ")}</bdi></p>}
+        {doc.settlement&&BigInt(doc.settlement.applied)>0n&&<p><strong>{tr("Applied customer credit")}</strong> <bdi>{amt(doc.settlement.applied)}</bdi></p>}
+        {doc.settlement&&BigInt(doc.settlement.availableCredit)>0n&&<p><strong>{tr("Available customer credit")}</strong> <bdi>{amt(doc.settlement.availableCredit)}</bdi></p>}
+        {doc.due!=null&&<p><strong>{tr(doc.kind==="invoice"?"Remaining balance":"Amount due")}</strong> <bdi>{amt(doc.due)}</bdi></p>}
         {doc.note&&<p><bdi>{doc.note}</bdi></p>}
       </>}
       {pay&&<>
         <p>{tr("Payment method")} <bdi>{label(lang,pay.method)}</bdi></p>
         {!receipt&&<p>{tr("Account")} <bdi>{pay.movements.filter((row)=>!row.reversal).map((row)=>row.account.name).join(" · ")}</bdi></p>}
         {!receipt&&<p><strong>{tr("Amount")}</strong> <bdi>{amt(pay.amount)}</bdi></p>}
+        {pay.creditRefund?.receipt&&<p>{tr("Credit source")} <bdi>{pay.creditRefund.receipt.number}</bdi></p>}
         {receipt&&<ReceiptItems lang={lang} details={receipt} print/>}
         {!receipt?.bills.length&&pay.allocations.length>0&&<Grid lang={lang} headers={["Document","Amount","Status"]} rows={pay.allocations.map((row)=>[
           row.document.number,amt(row.amount),label(lang,row.releasedAt||pay.reversedAt?"reversed":"posted"),
         ])}/>}
         {pay.note&&<p><bdi>{pay.note}</bdi></p>}
       </>}
-      {account&&<Grid lang={lang} headers={["Date","Number","Type","Amount","Running balance"]} rows={account.rows.map((row)=>[
-        format(row.at),row.number,label(lang,row.kind),amt(row.amount),amt(row.balance),
-      ])}/>}
+      {account&&<>
+        {account.availableCredit!==null&&<>
+          <p><strong>{tr("Outstanding balance")}</strong> <bdi>{amt(account.debts.reduce((sum,row)=>sum+BigInt(row.balance),0n))}</bdi></p>
+          <p><strong>{tr("Available customer credit")}</strong> <bdi>{amt(account.availableCredit)}</bdi></p>
+          {account.debts.length>0&&<Grid lang={lang} headers={["Invoice","Date","Invoice total","Previously paid","Credits issued","Applied customer credit","Remaining debt"]}
+            rows={account.debts.map((row)=>[row.number,format(row.at),amt(row.total),amt(row.paid),amt(row.credited),amt(row.applied),amt(row.balance)])}/>}
+        </>}
+        <Grid lang={lang} headers={["Date","Number","Type","Amount","Running balance","Allocations"]} rows={account.rows.map((row)=>[
+          format(row.at),row.number,label(lang,row.kind),amt(row.amount),amt(row.balance),[...row.links.map((item)=>[item.number,item.amount!==undefined?amt(item.amount):null,
+            item.released?tr("Allocation released"):null].filter(Boolean).join(" · ")),
+            ...(row.allocatedAmount!==undefined?[amt(row.allocatedAmount)]:[])].join(" · "),
+        ])}/>
+      </>}
       {(receipt||business.footer)&&<footer className="print-footer">
         {business.footer&&(!receipt||business.footer!==business.name)&&<bdi>{business.footer}</bdi>}
         {receipt&&<p className="receipt-print-brand"><strong>{business.name}</strong></p>}

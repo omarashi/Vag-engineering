@@ -12,6 +12,8 @@ Back up before updates. Build and migrate in an isolated staging environment fir
 
 ## Backups
 
+For Oracle deployments with a separate photo volume, use the [Oracle backup and restore commands](oracle-hosting.md#9-back-up-the-whole-database-and-prove-you-can-restore-it). Those commands stage temporary bundles on the attached disk and verify encrypted off-server copies. The commands below apply to deployments using the single general attachment store.
+
 ```sh
 docker compose --profile operations run --rm backup
 ```

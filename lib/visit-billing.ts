@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
-import type { Tx } from "./db";
+import { json, type Tx } from "./db";
 import { document, snapshot, validParty, type LineData } from "./documents";
-import { cents, date, extended, needed, requireRule, text, today, units } from "./rules";
+import { cents, date, extended, needed, record, requireRule, text, today, units } from "./rules";
 import { payment } from "./cash";
 import { move } from "./stock";
 import type { Actor, Change } from "./transaction";
@@ -10,6 +10,8 @@ import { visitParts, visitWork, workshopIntake } from "./visit-items";
 import { divideHalfUp, parseMoney } from "./decimal-input";
 import { serviceName } from "./services";
 import { recordedDeliveryDate } from "./visits";
+import { billingMetadata, hasBillingInput, workshopBillingData, workshopBillingLines } from "./workshop-billing-lines";
+import { billingSelection, chargeTypes, savedBillingSelection, workshopCharges, workshopMetadata } from "./workshop-charges";
 
 async function billingSource(tx: Tx, input: Input) {
   const visit = await tx.document.findFirst({
@@ -29,8 +31,8 @@ async function billVisit(tx: Tx, actor: Actor, visit: Awaited<ReturnType<typeof 
   requireRule(invoiceDay >= serviceDay && invoiceDay <= today(), "invalidInvoiceDate");
   requireRule(input.visitVersion === undefined || input.visitVersion === visit.version, "stale", 409);
   const work = visitWork(visit);
-  const prices = input.servicePrices;
-  requireRule(work.length > 0, "needServices");
+  const prices = input.servicePrices === undefined && !work.length ? {} : input.servicePrices;
+  requireRule(work.length > 0 || billingSelection(visit.metadata).length > 0, "needServices");
   requireRule(prices !== null && typeof prices === "object" && !Array.isArray(prices) && Object.keys(prices).length === work.length, "needServicePrices");
   const servicePrices = prices as Record<string, unknown>;
   const serviceLines = work.map(({ service }, position): LineData => {
@@ -56,7 +58,16 @@ async function billVisit(tx: Tx, actor: Actor, visit: Awaited<ReturnType<typeof 
       costTotal: extended(quantity, cost), stockQty: quantity, position: work.length + index,
     };
   });
-  const lines = [...serviceLines, ...partsLines];
+  const billing = await workshopBillingData(tx, visit.metadata, input);
+  const checklist = savedBillingSelection(visit.metadata);
+  if (checklist) {
+    const requestedCharges = input.workshopCharges === undefined ? workshopCharges(visit.metadata) : record(input.workshopCharges);
+    requireRule(chargeTypes.every((type) => checklist.includes(type)
+      ? parseMoney(requestedCharges[type]) !== null : billing.charges[type] === undefined), "invalidWorkshopCharge");
+    requireRule(billing.importRequested === checklist.includes("importedItem"), "importOptionRequired");
+    requireRule(!billing.importRequested || billing.importItems.length > 0, "importItemRequired");
+  }
+  const lines = [...serviceLines, ...partsLines, ...workshopBillingLines(billing, work.length + partsLines.length)];
   const subtotal = lines.reduce((sum, line) => sum + line.total, 0n);
   requireRule(subtotal > 0n, "amountMismatch");
   const discount = parseMoney(text(input.invoiceDiscount,24) || "0");
@@ -83,6 +94,9 @@ async function billVisit(tx: Tx, actor: Actor, visit: Awaited<ReturnType<typeof 
     },
     snapshot: await snapshot(tx, visit.partyId, visit.vehicleId),
   }, lines);
+  if (hasBillingInput(input)) await tx.document.update({ where: { id: visit.id }, data: {
+    version: { increment: 1 }, metadata: json({ ...workshopMetadata(visit.metadata), ...billingMetadata(billing) }),
+  }});
   for (const row of partsLines) {
     await move(tx, actor, {
       partId: row.partId, kind: "sale", quantity: row.quantity.negated(), documentId: billed.id, at, totalCost: row.costTotal,
@@ -103,7 +117,7 @@ export async function visitReceipt(tx: Tx, input: Input, actor: Actor): Promise<
   const amount = cents(input.amount);
   requireRule(amount > 0n, "amountMismatch");
   const at = date(input.at);
-  if (existing) requireRule(input.servicePrices === undefined && input.invoiceDiscount === undefined, "alreadyPosted", 409);
+  if (existing) requireRule(input.servicePrices === undefined && input.invoiceDiscount === undefined && !hasBillingInput(input), "alreadyPosted", 409);
   const invoice = existing ?? await billVisit(tx, actor, visit, input, at);
   const paid = await payment(tx, {
     kind: "receipt", invoiceId: invoice.id, amount: input.amount, accountId: input.accountId, method: input.method, at: input.at,

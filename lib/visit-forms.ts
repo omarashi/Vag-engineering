@@ -1,7 +1,7 @@
 import type { Document, Party, Vehicle } from "@prisma/client";
 import type { ActionSpec, Field, Option } from "@/components/action-form";
 import type { VisitPartOption } from "@/components/visit-parts-fields";
-import { money, moneyInput, translate, type Language } from "./locale";
+import { day, money, moneyInput, translate, type Language } from "./locale";
 import { db } from "./db";
 import { selectableServices, serviceName, serviceTypes, visitServiceTypes } from "./services";
 import { jobModeLabel, jobModes, visitParts, visitWork, workshopIntake } from "./visit-items";
@@ -10,6 +10,8 @@ import { recordedDeliveryDate } from "./visits";
 import { carName } from "./car-name";
 import { workshopPhotoLimit } from "./workshop-photo-limits";
 import { paymentChannelField } from "./payment-options";
+import { billingSelection, billingServiceLabels, billingServices, workshopCharges, workshopImports } from "./workshop-charges";
+import type { DebtDocument } from "./customer-debt";
 
 const field = (key: string, label: string, value = "", options: Partial<Field> = {}): Field => ({ key, label, value, ...options });
 const pick = (key: string, label: string, value: string, options: Option[], more: Partial<Field> = {}) =>
@@ -18,6 +20,19 @@ const version = (row?: { id: string; version: number }) => row ? { id: row.id, v
 
 export function receiptAccounts() {
   return db.moneyAccount.findMany({ where: { archived: false }, orderBy: { name: "asc" }, select: { id: true, name: true, code: true, kind: true } });
+}
+
+export function workshopBillingDefaults(metadata: unknown, mayInvoice = true) {
+  const importRequested = billingSelection(metadata).includes("importedItem");
+  return { workshopCharges: workshopCharges(metadata), importRequested,
+    ...(mayInvoice && { importItems: importRequested ? workshopImports(metadata) : [] }) };
+}
+
+export async function importSupplierOptions(metadata?: unknown): Promise<Option[]> {
+  const existing = workshopImports(metadata).map((item) => item.supplierId);
+  const suppliers = await db.party.findMany({ where: { kind: "supplier", OR: [{ archived: false }, { id: { in: existing } }] },
+    orderBy: { name: "asc" }, select: { id: true, name: true } });
+  return suppliers.map(({ id, name }) => ({ value: id, name }));
 }
 
 export function receiptFields(lang: Language, accounts: Awaited<ReturnType<typeof receiptAccounts>>, quick = false): Field[] {
@@ -42,18 +57,20 @@ export function invoiceReceiptForm(lang: Language, invoice: { id: string; at: Da
   };
 }
 
-export function customerDebtForm(lang: Language, partyId: string, balance: bigint, accounts: Awaited<ReturnType<typeof receiptAccounts>>,
-  customer?: { name: string; destination: string }): ActionSpec {
+export function customerDebtForm(lang: Language, partyId: string, debts: DebtDocument[], accounts: Awaited<ReturnType<typeof receiptAccounts>>,
+  options: { name: string; selected?: string; split?: boolean }): ActionSpec {
+  const invoices=options.split?debts:debts.filter((row)=>row.kind==="invoice");
+  const balance=debts.reduce((sum,row)=>sum+row.balance,0n);
   return {
-    action: "customerDebtPayment", title: "Record a debt payment",
-    triggerLabel: customer ? "Record payment" : undefined,
-    submitLabel: customer ? "Save payment" : "Save and open receipt",
-    destination: customer?.destination ?? "/payment/$id",
-    hidden: { partyId }, fields: receiptFields(lang, accounts, Boolean(customer)),
-    formSummary: {
-      label: "Outstanding balance", amount: money(lang, balance), name: customer?.name,
-      note: customer ? undefined : "Payments cover the oldest balances first.",
-    },
+    action: "customerDebtPayment", title: options.split?"Split debt payment":"Pay Debt",
+    submitLabel: "Confirm Payment",
+    destination: "/customers/"+partyId+"?receipt=$id#customer-balance",
+    hidden:{partyId}, debt:{mode:options.split?"split":"single",invoices:invoices.map((row)=>({ ...row,at:row.at.toISOString(),
+      total:String(row.total),paid:String(row.paid),balance:String(row.balance),credited:String(row.credited),applied:String(row.applied) }))},
+    fields: [ ...(options.split?[]:[pick("invoiceId","Unpaid invoice",options.selected ?? (invoices.length===1?invoices[0].id:""),
+      invoices.map((row)=>({value:row.id,name:row.number+" · "+day(lang,row.at)+" · "+money(lang,row.balance)})),{wide:true})]),
+      ...receiptFields(lang,accounts,true).map((item)=>item.key==="amount"?{...item,label:"Amount received (EGP)",autoFocus:false}:item)],
+    formSummary: {label:"Outstanding balance",amount:money(lang,balance),name:options.name},
   };
 }
 
@@ -154,15 +171,18 @@ export function jobProgressForm(row: Document, mayTakePayment: boolean, photoSlo
   };
 }
 
-export function jobForm(lang: Language, { row, customerId, carId, customers = [], cars = [], partOptions, receivers = [], mayTakePayment = false, photosEnabled = false }: {
+export function jobForm(lang: Language, { row, customerId, carId, customers = [], cars = [], partOptions, receivers = [], mayTakePayment = false, photosEnabled = false, canEditBilling = true }: {
   row?: Document; customerId?: string; carId?: string; customers?: Option[]; cars?: Option[]; partOptions?: VisitPartOption[]; receivers?: string[];
   mayTakePayment?: boolean;
   photosEnabled?: boolean;
+  canEditBilling?: boolean;
 } = {}): ActionSpec {
   const mileage = (row?.metadata as { mileage?: number } | undefined)?.mileage;
   const savedServices = row ? visitServiceTypes(row) : [];
   const choices = savedServices.includes("repair") ? serviceTypes : selectableServices;
-  const serviceOptions = choices.map((value) => ({ value, name: serviceName(lang, value) }));
+  const savedBilling = billingSelection(row?.metadata);
+  const serviceOptions: Option[] = choices.map((value) => ({ value, name: serviceName(lang, value) }));
+  if (canEditBilling) serviceOptions.push(...billingServices.map((value) => ({ value, name: translate(lang, billingServiceLabels[value]), checkboxOnly: true })));
   const selecting = !row && !carId;
   const parts = visitParts(row?.metadata);
   const existing = new Set(parts.map((part) => part.partId));
@@ -188,6 +208,7 @@ export function jobForm(lang: Language, { row, customerId, carId, customers = []
       ...version(row), ...(customerId ? { partyId: customerId } : {}), ...(carId ? { vehicleId: carId } : {}),
       ...(!legacy ? { jobMode } : {}),
       serviceDetails: Object.fromEntries(row ? visitWork(row).map(({ service, detail }) => [service, detail]) : []),
+      ...(canEditBilling && { billingChecklist: true }),
       ...(partOptions ? { parts: parts.map(({ partId, quantity }) => ({ partId, quantity })) } : {}),
     },
     ...(partOptions ? {
@@ -221,7 +242,8 @@ export function jobForm(lang: Language, { row, customerId, carId, customers = []
       ...(row && closed && intake?.jobMode === "stay" ? [field("deliveryDate", "Delivery date", recordedDeliveryDate(row), {
         type: "date", ltr: true, minFrom: "at", max: today(), required: true,
       })] : []),
-      { key: "services", label: "Services", type: "checkboxes", withDetails: true, required: true, wide: true, options: serviceOptions, value: savedServices },
+      { key: "services", label: "Services", type: "checkboxes", withDetails: true, required: canEditBilling || !savedBilling.length,
+        wide: true, options: serviceOptions, value: canEditBilling ? [...savedServices, ...savedBilling] : savedServices },
       field("note", "Notes", row?.note, { type: "textarea", wide: true }),
       field("mileage", "Odometer (km)", String(mileage ?? ""), { advanced: true, ltr: true, inputMode: "numeric" }),
     ],

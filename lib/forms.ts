@@ -1,5 +1,5 @@
 import type { ActionSpec, Field, Option } from "@/components/backoffice-form";
-import { day, label, moneyInput, partCodeLabel, type Language } from "./locale";
+import { day, label, moneyInput, partCodeLabel, translate, type Language } from "./locale";
 import { demoPartNamesArabic } from "./egyptian";
 import type { selections } from "./views";
 import { moneyAccountKinds, today } from "./rules";
@@ -9,7 +9,9 @@ import { can } from "./permissions";
 import { carName } from "./car-name";
 import { jobStates } from "./workshop";
 import { accountName, accountTypeName, isCustomPaymentMethod, paymentChannelField } from "./payment-options";
-import { payrollLocked } from "./payroll-rules";
+import { defaultEmployeeStart, payrollLocked } from "./payroll-rules";
+import { workshopBillingDefaults } from "./visit-forms";
+import { chargeLabels, isChargeType, workshopImports } from "./workshop-charges";
 
 export type Choices=Awaited<ReturnType<typeof selections>>;
 type Row=Record<string,unknown>;
@@ -52,6 +54,12 @@ export function forms(lang:Language,data:Choices,actor:Actor){
     ? choose("category","Category",catalogue("expenseCategory"),true) : txt("category","Category",true);
   const staffIds=(row:Row,completed=false)=>((row.assignments ?? []) as {employeeId:string;completed:boolean}[]).filter((item)=>!completed||item.completed).map((item)=>item.employeeId);
   const businessKinds=["invoice","purchase","customerOpening","supplierOpening","credit","supplierCredit","expense","payroll","employeeOpening","advanceOpening"];
+  const billableJob=(row:Row)=>{
+    const mayInvoice=can(actor.role,"invoice");
+    const prior=workshopImports(row.metadata).filter(({supplierId})=>!supplier.some(({value})=>value===supplierId));
+    const options=new Map([...supplier,...prior.map(({supplierId,supplierName})=>({value:supplierId,name:supplierName}))].map((option)=>[option.value,option]));
+    return { hidden:workshopBillingDefaults(row.metadata,mayInvoice), workshopBilling:{suppliers:mayInvoice?[...options.values()]:undefined} };
+  };
   const ret={
     can:(action:string)=>can(actor.role,action),
     party:(kind:"customer"|"supplier",row:Row={})=>edit(kind,row.id?"Edit":kind==="customer"?"Add customer":"Add supplier",[
@@ -83,9 +91,8 @@ export function forms(lang:Language,data:Choices,actor:Actor){
       txt("name","Name",true,str(row,"name")),txt("phone","Phone",false,str(row,"phone"),true),txt("arrangement","Pay arrangement",false,str(row,"arrangement")),
       m("weeklySalary","Weekly salary (EGP)",row),
       choose("paidDaysPerWeek","Paid days per week",[1,2,3,4,5,6,7].map(day=>({value:String(day),name:String(day)})),true,str(row,"paidDaysPerWeek")||"6"),
-      m("rate","Rate",row),
-      when("effectiveAt","Effective date",dated(row,"effectiveAt")||today()),when("startedAt","Start date",dated(row,"startedAt")||today()),
-      ...(can(actor.role,"employeeDismiss")&&!row.dismissalReason?[when("endedAt","End date",dated(row,"endedAt")),check("archived","Archived",row.archived===true)]:[]),
+      when("startedAt","Start date",dated(row,"startedAt")||defaultEmployeeStart(),true),
+      ...(row.id&&can(actor.role,"employeeDismiss")&&!row.dismissalReason?[check("archived","Archived",row.archived===true)]:[]),
       memo("note","Notes",str(row,"note")),
     ],row,"/payroll/$id"),
     account:(row:Row={})=>edit("account",row.id?"Edit account":"Add account",[
@@ -128,13 +135,18 @@ export function forms(lang:Language,data:Choices,actor:Actor){
       txt("title","Title",true,source?str(source,"title"):""),when(),txt("mileage","Mileage",false,"",true),
       ...(!source?[staffField()]:[]),memo("requested","Complaint / requested work"),memo("note","Notes",source?str(source,"note"):""),memo("reason","Reason or approval"),
     ],{},"/jobs/$id"),hidden:source?{sourceId:source.id}:undefined}),
-    jobUpdate:(row:Row)=>edit("jobUpdate","Update job",[
+    jobUpdate:(row:Row, editBilling=false)=>{
+      const spec=edit("jobUpdate","Update job",[
       choose("status","Status",enumeration(jobStates),true,str(row,"status")),
       txt("stage","Tuning stage"),memo("note","Notes",str(row,"note")),memo("inspection","Inspection",value(metadata(row),"inspection")),
       memo("work","Work notes",value(metadata(row),"work")),memo("ecu","ECU notes",value(metadata(row),"ecu")),memo("tcu","TCU notes",value(metadata(row),"tcu")),
       txt("dynoBefore","Dyno before",false,value(metadata(row),"dynoBefore")),txt("dynoAfter","Dyno after",false,value(metadata(row),"dynoAfter")),
       when("followUp","Follow-up date",value(metadata(row),"followUp")),txt("followMileage","Follow-up mileage",false,value(metadata(row),"followMileage")),memo("reason","Reason"),
-    ],row),
+      ],row);
+      if(!editBilling) return spec;
+      const billing=billableJob(row);
+      return {...spec,...billing,hidden:{...spec.hidden,...billing.hidden}};
+    },
     assign:(row:Row)=>edit("jobAssignment","Assign technicians",[staffField("employees","Technicians",staffIds(row)),staffField("completed","Completed technicians",staffIds(row,true))],row),
     jobStock:(row:Row)=>post("jobStock","Stock movement",[
       choose("kind","Type",enumeration(["issue","jobReturn"]),true,"issue"),
@@ -150,8 +162,10 @@ export function forms(lang:Language,data:Choices,actor:Actor){
       const issuedParts = stock.filter(({issued})=>Number(issued)>0).map(({part,issued})=>({
         value:part.id,name:part.code+" · "+part.name,price:moneyInput(part.price),quantity:issued,
       }));
+      const billing=billableJob(row);
       return {
-        ...post("invoice","Post job invoice",[...dateFields(),memo("note","Notes")],{jobId:row.id},"/record/$id"),
+        ...post("invoice","Post job invoice",[...dateFields(),memo("note","Notes")],{jobId:row.id,jobVersion:row.version,...billing.hidden},"/record/$id"),
+        workshopBilling:billing.workshopBilling,
         editor:"lines",parts:issuedParts,services:catalogue("service"),
         initialLines:issuedParts.map(({value,name,price,quantity})=>({
           kind:"part",partId:value,description:name,quantity,price,discount:"0",
@@ -170,8 +184,9 @@ export function forms(lang:Language,data:Choices,actor:Actor){
       when("at","Date",day,true),txt("payee","Payee"),memo("note","Notes"),
     ],{},"/record/$id"),
     credit:(row:Row)=>({...post("credit","Add credit / return",[when(),m("amount","Amount"),memo("reason","Reason","",true)],{sourceId:row.id},"/record/$id"),
-      editor:"returns" as const,purchase:["purchase","supplierOpening"].includes(str(row,"kind")),
-      options:((row.lines ?? []) as {id:string;description:string;quantity:string}[]).map((line)=>({value:line.id,name:line.description+" · "+line.quantity})),
+      editor:"returns" as const,purchase:["purchase","supplierOpening"].includes(str(row,"kind")),invoiceCredit:row.kind==="invoice",
+      options:((row.lines ?? []) as {id:string;description:string;quantity:string;purpose?:string;partId?:string}[]).map((line)=>({value:line.id,
+        name:(isChargeType(line.purpose)?translate(lang,chargeLabels[line.purpose]):line.description)+" · "+line.quantity,related:line.partId || ""})),
     }),
     reverse:(row:Row,payment=false)=>post(payment?"reversePayment":"reverseDocument",payment?"Reverse payment":"Reverse document",[when(),memo("reason","Reason","",true)],{id:row.id}),
     payment:(row?:Row,job?:Row,opening=false,receiptOnly=false)=>{

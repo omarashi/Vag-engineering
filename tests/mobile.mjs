@@ -91,7 +91,7 @@ try{
   await page.waitForURL("**/overview");
   assert.equal(await page.locator(".log-content").evaluate(main=>main.scrollTop),0);
 
-  await page.goto(base+"/payroll/"+employeeId);
+  await page.goto(base+"/payroll/"+employeeId+"?week=2025-11-22");
   for(const title of ["Pay weekly salary","Record cash advance"]){
     await page.getByRole("button",{name:title,exact:true}).click();
     const dialog=page.getByRole("dialog",{name:title,exact:true});

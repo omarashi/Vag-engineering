@@ -64,7 +64,7 @@ Open a second **Windows PowerShell** window. Set `$server` and `$key` again as i
 Set-Location -LiteralPath 'C:\Users\LENOVO\Desktop\VAG Engineerin'
 $bundle = Join-Path $env:TEMP ('workshop-app-' + [guid]::NewGuid() + '.tar.gz')
 $items = @('app','components','lib','prisma','public','scripts','tests',
-  'Dockerfile','compose.yaml','.dockerignore','package.json','package-lock.json',
+  'Dockerfile','compose.yaml','compose.oracle.yaml','.dockerignore','package.json','package-lock.json',
   'next.config.mjs','next-env.d.ts','postcss.config.mjs','prisma.config.ts','tsconfig.json')
 tar.exe -czf $bundle @items
 if ($LASTEXITCODE -ne 0) { throw 'Packaging failed.' }
@@ -80,7 +80,7 @@ tar -xzf ~/workshop-app.tar.gz
 
 ## 6. Set up the database and start the app
 
-The server runs **PostgreSQL 17**. The Docker volume `pgdata` holds the complete live database, including customers, vehicles, jobs, stock, debts, payments, payroll, user accounts, password hashes and audit history. Receipts are printable from their stored records. Uploaded files, if you ever use them, live in a second volume named `attachments`. Restarting or updating the app normally preserves both. Deleting the volumes or a server disk can erase the records. Copying the source in step 5 starts with an empty database. [Project configuration](../compose.yaml) · [Recovery guide](operations.md)
+The `pgdata` and `attachments` Docker volumes hold PostgreSQL 17 and general attachments on the boot disk. The dedicated 150 GB volume holds new workshop photos and temporary backup bundles. Existing uploads keep their current references and remain readable. [Project configuration](../compose.yaml) · [Recovery guide](operations.md)
 
 On **Ubuntu**, stay in `/srv/vag-erp`. Substitute the real HTTPS address and the owner's chosen username before running this block. It creates fresh credentials and refuses to overwrite an existing `.env`. Store a private recovery copy of this file. Keep it out of source control.
 
@@ -99,12 +99,36 @@ EOF
 )
 ```
 
-Compose already supplies the correct internal `DATABASE_URL`. Add a small **server-side** Compose override so PostgreSQL restarts after a machine reboot, alongside the website. Run `nano compose.override.yaml` in `/srv/vag-erp`, paste the following, press **Ctrl+O**, **Enter**, then **Ctrl+X**. Compose reads it automatically.
+### Attach and mount the photo disk
 
-```yaml
-services:
-  db:
-    restart: unless-stopped
+1. In OCI Console, check total Always Free boot and block allocations in the home region. Create or select the 150 GB Always Free eligible volume in the VM's availability domain. On the instance's **Storage → Attached block volumes** page, attach it with **Paravirtualized** and **Read/write** access. Choose a consistent device path if offered. [Oracle capacity](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) · [Attach a volume](https://docs.oracle.com/en-us/iaas/Content/Block/Tasks/attach-compute-volume-attachment.htm)
+2. On Ubuntu, run `lsblk -o NAME,SIZE,TYPE,FSTYPE,UUID,MOUNTPOINTS` and identify the attached disk and its filesystem or partition. Reuse an existing filesystem with its UUID. For a confirmed newly created, empty data volume, inspect `sudo wipefs -n <data-device>` and then initialize it manually with `sudo mkfs.ext4 <data-device>`, using the device path identified above. A volume with an existing filesystem, partition table, or uncertain contents requires inspection and preservation. [OCI mount options](https://docs.oracle.com/en-us/iaas/Content/Block/References/fstaboptionsconsistentdevicepaths.htm)
+3. Run `sudo install -d -m 0755 /mnt/vag-data`. Add the following entry with `sudoedit /etc/fstab`, substituting the actual filesystem UUID and filesystem type. The mount is attempted before Docker on boot and startup can continue if the volume is unavailable. Run `sudo systemctl daemon-reload`, `sudo mount /mnt/vag-data`, then `findmnt --mountpoint /mnt/vag-data -o SOURCE,FSTYPE,UUID`. Compare the displayed UUID to the selected data filesystem before continuing. [systemd mount options](https://www.freedesktop.org/software/systemd/man/latest/systemd.mount.html)
+
+```fstab
+UUID=<data-filesystem-uuid> /mnt/vag-data ext4 defaults,nofail,x-systemd.before=docker.service,x-systemd.device-timeout=30s 0 2
+```
+
+4. Run these commands after confirming the mount. UID 1000 is the app container user. The backup staging directory is private to the root-run backup and restore jobs.
+
+```bash
+sudo mountpoint -q /mnt/vag-data &&
+  sudo install -d -o 1000 -g 1000 -m 0750 /mnt/vag-data/vehicle-photos &&
+  sudo install -d -m 0700 /mnt/vag-data/backup-staging &&
+  findmnt -n -o UUID --mountpoint /mnt/vag-data | sudo tee /mnt/vag-data/vehicle-photos/.vag-photo-volume &&
+  sudo chmod 0444 /mnt/vag-data/vehicle-photos/.vag-photo-volume
+```
+
+5. Append these two lines once to the server `.env`. Use the UUID verified with `findmnt`. Compose sets `PHOTO_STORAGE_PATH=/mnt/vag-data/vehicle-photos` inside the app. Check the mount before deploying.
+
+```dotenv
+COMPOSE_FILE=compose.yaml:compose.oracle.yaml
+PHOTO_STORAGE_VOLUME_ID=<data-filesystem-uuid>
+```
+
+```bash
+sudo sh scripts/oracle-photos.sh check
+sudo docker compose config --quiet
 ```
 
 **Choose one starting point now.** If real records on the shop PC must carry over, skip directly to **If bringing real records from the existing PC** below. If the PC holds sample data, use the clean start.
@@ -129,14 +153,14 @@ unset BOOTSTRAP_PASSWORD
 
 **If bringing real records from the existing PC:** Take this branch **before** running `compose up -d --build` or creating an owner. Pause new entries at cutover. On Windows, with the existing local database running and the project’s PostgreSQL tools and Git Bash installed, `./scripts/rehearse-windows.ps1` makes a full dated backup, restores it into a separate local test database and compares totals. Use the bundle only after it reports success. It is under `data/rehearsal/backups/`, and contains `database.dump`, `attachments.tar.gz` and `SHA256SUMS`. A full restore also brings the source users and password hashes. Review any demo accounts before allowing internet access. Keep the source PC and its backup intact. [Windows recovery procedure](../scripts/rehearse-windows.ps1)
 
-On Ubuntu create the empty destination with `mkdir -p /srv/vag-erp/backups` and `sudo docker compose up -d db`. From the second Windows PowerShell window, in the project directory, run the following with the actual dated folder name:
+On Ubuntu run `sudo sh scripts/oracle-photos.sh check`, `sudo install -d -o "$USER" -g "$(id -gn)" -m 0700 /mnt/vag-data/import`, and `sudo docker compose up -d db`. From the second Windows PowerShell window, in the project directory, run the following with the actual dated folder name:
 
 ```powershell
 $stamp = 'YYYYMMDDTHHMMSSZ'
-scp -r -i $key ".\data\rehearsal\backups\$stamp" "ubuntu@${server}:/srv/vag-erp/backups/"
+scp -r -i $key ".\data\rehearsal\backups\$stamp" "ubuntu@${server}:/mnt/vag-data/import/"
 ```
 
-On Ubuntu run `sudo docker compose --profile operations run --rm restore RESTORE_TO_EMPTY_TARGET YYYYMMDDTHHMMSSZ` with that same timestamp. After a successful restore, run `sudo docker compose up -d --build` and check `/api/health`. Sign in with the restored owner account. Compare customer counts, a known debt, a receipt total, and payroll with the PC before switching staff over. If the target already contains tables, the restore refuses to proceed. Use a new empty target and preserve the existing one. [Restore procedure](operations.md)
+On Ubuntu move the dated bundle from `/mnt/vag-data/import` to `/mnt/vag-data/backup-staging` with `sudo mv`, then run `sudo docker compose --profile operations run --rm restore RESTORE_TO_EMPTY_TARGET YYYYMMDDTHHMMSSZ` with that same timestamp. After a successful restore, run `sudo docker compose up -d --build` and check `/api/health`. Sign in with the restored owner account. Compare customer counts, a known debt, a receipt total, and payroll with the PC before switching staff over. Retire the staged import bundle after verifying the independent backup described below. [Restore procedure](operations.md)
 
 ## 7. Connect the domain and enable HTTPS
 
@@ -155,40 +179,42 @@ On Ubuntu run `sudo docker compose --profile operations run --rm restore RESTORE
 
 **A live database is one copy.** The following makes independent copies that include the authentication and financial records. Oracle may reclaim an idle free VM and provides no free-tier uptime guarantee. A daily snapshot can still leave up to a day of entries to reconcile. If losing a day’s receipts would be too costly, schedule more frequent backups and monitor storage. [Oracle free tier FAQ](https://www.oracle.com/cloud/free/faq/) · [Project backup and restore](operations.md)
 
-1. On Ubuntu, from `/srv/vag-erp`, run `sudo docker compose --profile operations run --rm backup`. Check for `backup complete`. The dated directory in `backups/` contains the PostgreSQL dump, attachment archive and checksums. The default `BACKUP_KEEP=4` retains four successful local runs.
-2. Pick independent, private backup storage. One practical option is a shop-controlled Google Drive with an **rclone encrypted remote**. On Ubuntu install `sudo apt install -y rclone`. Run `sudo rclone config`, create a `drive` remote named `shopdrive`, and authorize the shop’s backup account. On a server without a browser, follow rclone’s headless authorization instructions from a trusted PC. Create a second remote of type `crypt` named `shop-encrypted`, pointing to `shopdrive:WorkshopBackups`. Select filename encryption and save the encryption password, salt if used, and a protected copy of the rclone config outside Oracle. You will need them during recovery. [Google Drive setup](https://rclone.org/drive/) · [Remote authorization](https://rclone.org/remote_setup/) · [Encrypted backups](https://rclone.org/crypt/)
-3. Make and verify the first off-server copy. These commands run from `/srv/vag-erp`. `copy` retains older remote backups when the local rotation removes them. Set a separate remote retention policy or review usage regularly.
+1. Choose independent private storage with room for the shop's photos and at least four weekly recovery points. Install `rclone` on Ubuntu and use `sudo rclone config` to create an encrypted `crypt` remote named `shop-encrypted` backed by a service that supplies checksums, such as a shop-controlled Google Drive account. Save a protected copy of the remote configuration, password, and salt outside Oracle. Verify the available quota before relying on it. [Google Drive setup](https://rclone.org/drive/) · [Remote authorization](https://rclone.org/remote_setup/) · [Encrypted backup verification](https://rclone.org/commands/rclone_cryptcheck/)
+2. From `/srv/vag-erp`, run a backup. The dated bundle contains the database dump, general attachments, and the photo inventory from the same SQL snapshot. Photos are stored as individual encrypted files and unchanged files are skipped on future uploads. The script verifies the remote files, writes a `COMPLETE` marker last, and clears the temporary staging data on the 150 GB disk. Keep remote photo objects as long as any retained bundle may reference them.
 
 ```bash
-sudo rclone copy ./backups shop-encrypted:daily --exclude '.pending-*/**'
-sudo rclone check ./backups shop-encrypted:daily --one-way --download --exclude '.pending-*/**'
+sudo env PHOTO_BACKUP_REMOTE=shop-encrypted:oracle-erp sh scripts/oracle-photos.sh backup
+sudo rclone lsf shop-encrypted:oracle-erp/bundles --dirs-only
 ```
 
-4. For nightly backups at 03:00 Cairo time, set `sudo timedatectl set-timezone Africa/Cairo` and open `sudo crontab -e`. Add the following single line. Review `/var/log/vag-backup.log`, set up a failure or missing-backup notification with your monitoring service, and verify the following morning that a new **off-server** copy exists.
+3. Replace the old backup cron entry with the jobs below. Set `sudo timedatectl set-timezone Africa/Cairo` for the 03:00 schedule and configure a working mail relay for cron's `MAILTO`. A failed backup or a disk reaching 80% or 95% produces mail when the relay is configured. Periodic capacity and photo counts are available with `journalctl -t vag-disk`. Verify that the owner receives a test message and that the next scheduled backup publishes a `COMPLETE` marker. Review old local `backups/` archives and retire any redundant copies after checking independent recovery.
 
 ```cron
-0 3 * * * (cd /srv/vag-erp && /bin/sh scripts/scheduled-backup.sh && /usr/bin/rclone copy ./backups shop-encrypted:daily --exclude '.pending-*/**') >>/var/log/vag-backup.log 2>&1
+MAILTO=owner@example.com
+PHOTO_BACKUP_REMOTE=shop-encrypted:oracle-erp
+0 3 * * * cd /srv/vag-erp && /bin/sh scripts/oracle-photos.sh backup >/dev/null
+15 * * * * cd /srv/vag-erp && /bin/sh scripts/oracle-photos.sh monitor
 ```
 
-5. Before relying on the system, restore a backup retrieved from the independent storage. On a separate recovery server, copy the project code and deployment settings, install Docker and rclone, recover the encrypted remote config, and prepare `/srv/vag-erp` as above. Set `stamp` to one real backup directory returned by `sudo rclone lsf shop-encrypted:daily --dirs-only`. From the recovery project directory:
+4. Restore a verified backup on an isolated recovery server with its own empty database, attachment volume, and mounted photo disk. Follow section 6 using the recovery disk's UUID, restore the rclone configuration, and use a timestamp whose bundle contains `COMPLETE`. Start only the database before running the restore.
 
 ```bash
 stamp=YYYYMMDDTHHMMSSZ
-sudo rclone copy "shop-encrypted:daily/$stamp" "./backups/$stamp"
-sudo docker compose -p vag-recovery up -d db
-sudo docker compose -p vag-recovery --profile operations run --rm restore RESTORE_TO_EMPTY_TARGET "$stamp"
+sudo docker compose up -d db
+sudo env PHOTO_BACKUP_REMOTE=shop-encrypted:oracle-erp sh scripts/oracle-photos.sh restore RESTORE_TO_EMPTY_TARGET "$stamp"
 ```
 
-The restore verifies checksums and checks the empty target before loading data. Inspect the reported totals. Start the isolated recovery app, confirm a known customer, balance, salary and receipt, and compare them to the source as of the backup time. Keep the recovery app separate from the production tunnel. Store the deployment `.env`, source version, server access, and backup recovery credentials separately from the database bundles.
+The restore checks remote integrity and SQL file references. Start the isolated app and open a known workshop photo and general attachment. Compare workshop and financial records to the source as of the backup time. Keep the recovery app separate from the public tunnel. An interrupted restore may leave partial data in the recovery target. Use a fresh empty recovery target to retry. Store the deployment `.env`, source version, and recovery credentials separately from the backup bundles.
 
 ## 10. Watch costs, update and troubleshoot
 
 | Situation | What to do |
 |---|---|
-| Free disk is filling | Check `df -h /` on Ubuntu and the allocated volumes in Oracle. Review backup use and set a disk-space alert around 75–80%. A full disk can interrupt writes. Add storage before that point. |
+| Free disk is filling | Check `df -h / /mnt/vag-data` and `journalctl -t vag-disk`. Inspect older pre-cutover archives, general attachments, Docker images, and PostgreSQL on the boot disk. Review the independent backup capacity as well. |
+| Photo upload reports storage unavailable | Run `sudo sh scripts/oracle-photos.sh check` and confirm the expected UUID and available space. If the app started with the volume absent, mount the correct disk and run `sudo docker compose up -d --force-recreate app` to refresh the bind mount. |
 | You want paid capacity | In Oracle Console go to **Billing & Cost Management → Upgrade and Manage Payment** and choose **Pay As You Go** when ready. Existing resources remain accessible and eligible allowances continue. Paid capacity uses Oracle’s current rates. Budget alerts email you about spending and do not cap the bill. [Upgrade instructions](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier.htm) · [Budget alerts](https://docs.oracle.com/en-us/iaas/Content/Billing/Tasks/managingalertrules.htm) |
 | The public link fails | First run `curl -fsS http://127.0.0.1:3000/api/health` on Ubuntu. If local health passes, check tunnel health, the `shop` hostname, certificate status, and the HTTP service address. The connector needs outbound TCP or UDP 7844. [Tunnel connectivity](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/tunnel-with-firewall/) |
 | Login loads but sign-in fails | Check the full `BETTER_AUTH_URL` in the server `.env` against the HTTPS address in the browser, including the subdomain. After correcting the URL, run `sudo docker compose up -d --force-recreate app` and try again. Confirm the owner exists and the account is active. |
 | Local health fails | Run `sudo docker compose ps -a` and `sudo docker compose logs --tail=80 db migrate app` in `/srv/vag-erp`. Check migration status and free disk space. Keep secrets out of shared logs. |
-| A new app version is ready | Back up first, test the new version and migrations on a separate copy, then update the production source and run `sudo docker compose up -d --build`. Keep `.env`, `compose.override.yaml`, PostgreSQL and attachment volumes. The `-v` option on `docker compose down` deletes named volumes and can erase the live shop database. |
+| A new app version is ready | Back up first, check the photo mount, and test the update on a separate copy. Deploy with `sudo docker compose up -d --build` using the same PostgreSQL, attachment and photo volumes. Reopen an existing photo after deployment. |
 | Domain expires or you change hosts | Domain registration and the Oracle database are separate. An expired domain can stop staff reaching the link even while records still exist. Renew the domain or reconnect a hostname. When moving hosts, restore the verified backup, update the tunnel and check the app’s public URL. |

@@ -20,7 +20,7 @@ import { accountName, accountTypeName } from "@/lib/payment-options";
 import { ActionForm as JobActionForm } from "./action-form";
 import { customerChoices, jobCarChoices, jobForm, newCustomerForJob, newCustomerLabel, receiverSuggestions, visitPartOptions } from "@/lib/visit-forms";
 
-export type Query=Filters&{new?:string;report?:string;week?:string};
+export type Query=Filters&{new?:string;report?:string;week?:string;vendor?:string;invoice?:string};
 export type ModuleProps={lang:Language;forms:Forms;query:Query};
 
 export async function Customers({lang,forms,query}:ModuleProps){
@@ -148,14 +148,19 @@ export async function Balances({lang,forms,query}:ModuleProps){
     <Toolbar lang={lang} path="/balances" filters={query} dateRange party={[...forms.adapters.customer,...forms.adapters.supplier]}/>
     <div className="module-grid">
       {statementData&&<Panel title={tr("Party statement")+" · "+statementData.party.name}><div className="detail-copy page-actions"><PrintLink lang={lang} type="statement" id={statementData.party.id}/>{forms.can("export")&&<ExportLink lang={lang} report="statement" filters={query}/>}</div>
+        {statementData.availableCredit!==null&&<Info lang={lang} items={[["Outstanding balance",<Amt lang={lang} value={statementData.debts.reduce((sum,row)=>sum+BigInt(row.balance),0n)}/>],
+          ["Available customer credit",<Amt lang={lang} value={statementData.availableCredit}/>]]}/>}
         <Register lang={lang} head={["Date","Number","Type","Amount","Running balance","Allocations"]} rows={statementData.rows.map((row)=>[
           day(lang,row.at),<Ref href={"/"+row.target+"/"+row.id}>{row.number}</Ref>,label(lang,row.kind),<Amt lang={lang} value={row.amount}/>,<Amt lang={lang} value={row.balance}/>,
-          <span className="flex flex-wrap gap-2">{row.links.map((item)=><Ref key={item.id} href={"/record/"+item.id}>{item.number}</Ref>)}</span>,
+          <span className="flex flex-wrap gap-2">{row.links.map((item,index)=><span key={item.id+"-"+index}><Ref href={"/"+(item.target ?? "record")+"/"+item.id}>{item.number}</Ref>
+            {item.amount!==undefined&&<> · <Amt lang={lang} value={item.amount}/></>}{item.released&&<> · {tr("Allocation released")}</>}</span>)}
+            {row.allocatedAmount!==undefined&&<Amt lang={lang} value={row.allocatedAmount}/>}</span>,
         ])}/></Panel>}
       <Panel title={tr("Supplier debt")}><DocRegister lang={lang} docs={open}/></Panel>
       <Panel title={tr("Posted credits")}><DocRegister lang={lang} docs={credit}/></Panel>
       <Panel title={tr("Unapplied")}><Register lang={lang} head={["Number","Type","Name","Amount"]} rows={allPays.filter((row)=>!row.reversedAt&&["receipt","supplierPayment"].includes(row.kind))
-        .map((row)=>({...row,unapplied:BigInt(row.amount)-row.allocations.filter((item)=>!item.releasedAt).reduce((sum,item)=>sum+BigInt(item.amount),0n)})).filter((row)=>row.unapplied>0n)
+        .map((row)=>({...row,unapplied:BigInt(row.amount)-row.allocations.filter((item)=>!item.releasedAt).reduce((sum,item)=>sum+BigInt(item.amount),0n)
+          -row.creditUses.filter((item)=>!item.reversedAt).reduce((sum,item)=>sum+BigInt(item.amount),0n)})).filter((row)=>row.unapplied>0n)
         .map((row)=>[<Ref href={"/payment/"+row.id}>{row.number}</Ref>,label(lang,row.kind),<bdi>{row.party?.name}</bdi>,<Amt lang={lang} value={row.unapplied}/>])}/></Panel>
       {forms.can("payment")&&<details className="log-optional" open={query.new==="payment"||undefined}>
         <summary>{tr("Advanced payments")}<ChevronDown size={15} aria-hidden="true"/></summary>

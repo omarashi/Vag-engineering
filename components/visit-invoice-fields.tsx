@@ -4,19 +4,26 @@ import { normalize, parseMoney } from "@/lib/decimal-input";
 import { money, translate, type Language } from "@/lib/locale";
 import { serviceName } from "@/lib/services";
 import type { VisitPart, WorkDetail } from "@/lib/visit-items";
+import { chargeTypes, importSellingTotal, type BillingService, type ChargeType, type ImportInput } from "@/lib/workshop-charges";
+import { WorkshopBillingFields, type BillingValues, type SupplierOption } from "./workshop-billing-fields";
 
 export type VisitInvoicePricing = {
   work: WorkDetail[];
   parts: (VisitPart & { lineTotal: string })[];
 };
 
-export function VisitInvoiceFields({ lang, pricing, prices, discount, onDiscountChange, onChange }: {
+export type VisitWorkshopPricing = { selection: BillingService[]; suppliers: SupplierOption[] };
+
+export function VisitInvoiceFields({ lang, pricing, prices, discount, onDiscountChange, onChange, billing, values, onBillingChange }: {
   lang: Language;
   pricing: VisitInvoicePricing;
   prices: Record<string, string>;
   discount: string;
   onDiscountChange: (discount: string) => void;
   onChange: (prices: Record<string, string>) => void;
+  billing?: VisitWorkshopPricing;
+  values: BillingValues;
+  onBillingChange: (key: string, value: boolean | Partial<Record<ChargeType, string>> | ImportInput[]) => void;
 }) {
   const t = (key: string) => translate(lang, key);
   const servicesSubtotal = pricing.work.reduce((sum, { service }) => {
@@ -24,13 +31,17 @@ export function VisitInvoiceFields({ lang, pricing, prices, discount, onDiscount
     return sum + (price !== null && price >= 0n ? price : 0n);
   }, 0n);
   const partsSubtotal = pricing.parts.reduce((sum, item) => sum + BigInt(item.lineTotal), 0n);
-  const subtotal = servicesSubtotal + partsSubtotal;
+  const charges = (values.workshopCharges ?? {}) as Partial<Record<ChargeType, string>>;
+  const selectedCharges = chargeTypes.filter((type) => billing?.selection.includes(type));
+  const chargesSubtotal = selectedCharges.reduce((sum, type) => sum + (parseMoney(charges[type]) ?? 0n), 0n);
+  const importsSubtotal = ((values.importItems ?? []) as ImportInput[]).reduce((sum, item) => sum + importSellingTotal(item), 0n);
+  const subtotal = servicesSubtotal + partsSubtotal + chargesSubtotal + importsSubtotal;
   const reduction = parseMoney(discount.trim() || "0");
   const net = reduction !== null && reduction >= 0n && reduction <= subtotal ? subtotal - reduction : null;
   const quantity = new Intl.NumberFormat(lang === "ar" ? "ar-EG" : "en-GB", { maximumFractionDigits: 3 });
 
   return <div className="invoice-pricing">
-    <fieldset className="invoice-price-list">
+    {pricing.work.length > 0 && <fieldset className="invoice-price-list">
       <legend>{t("Service prices (EGP)")}</legend>
       {pricing.work.map(({ service, detail }) => {
         const name = serviceName(lang, service);
@@ -41,7 +52,7 @@ export function VisitInvoiceFields({ lang, pricing, prices, discount, onDiscount
             value={prices[service] ?? ""} onChange={(event) => onChange({ ...prices, [service]: event.target.value })}/>
         </label>;
       })}
-    </fieldset>
+    </fieldset>}
     {pricing.parts.length > 0 && <section className="invoice-price-list" aria-label={t("Parts sold")}>
       <h3>{t("Parts sold")}</h3>
       <ul>{pricing.parts.map((item) => <li key={item.partId} className="invoice-price-row">
@@ -51,6 +62,8 @@ export function VisitInvoiceFields({ lang, pricing, prices, discount, onDiscount
         <strong><bdi>{money(lang, item.lineTotal)}</bdi></strong>
       </li>)}</ul>
     </section>}
+    {billing && billing.selection.length > 0 && <WorkshopBillingFields lang={lang} suppliers={billing.suppliers} values={values}
+      onChange={onBillingChange} showImport={false} selectedCharges={selectedCharges}/>}
     <label className="invoice-price-row">
       <span>{t("Discount (EGP)")}</span>
       <input name="invoiceDiscount" dir="ltr" inputMode="decimal" maxLength={24}

@@ -7,6 +7,8 @@ import { move } from "./stock";
 import { workshopIntake, intakeStatuses } from "./visit-items";
 import { jobEndDate } from "./visits";
 import type { Actor, Change } from "./transaction";
+import { can } from "./permissions";
+import { billingMetadata, hasBillingInput, workshopBillingData } from "./workshop-billing-lines";
 
 export const jobStates=["new","inspecting","awaitingApproval","approved","inProgress","delivered","cancelled"] as const;
 export const closedJobStatuses = ["delivered", "cancelled"];
@@ -104,12 +106,18 @@ export async function jobUpdate(tx:Tx,input:Input,actor:Actor):Promise<Change> {
     }
   }
   const old=before.metadata as Record<string,unknown>;
+  let billing = {};
+  if (hasBillingInput(input)) {
+    requireRule(input.importItems === undefined || can(actor.role, "visitInvoice"), "forbidden", 403);
+    requireRule(!await tx.document.findFirst({ where: { sourceId: id, kind: "invoice", status: "posted" } }), "alreadyPosted", 409);
+    billing = billingMetadata(await workshopBillingData(tx, old, input));
+  }
   const after=await tx.document.update({where:{id},data:{status,version:{increment:1},note:text(input.note ?? before.note),
     metadata:json({...old,inspection:text(input.inspection ?? old.inspection),work:text(input.work ?? old.work),
       ecu:text(input.ecu ?? old.ecu),tcu:text(input.tcu ?? old.tcu),dynoBefore:text(input.dynoBefore ?? old.dynoBefore,50),
       dynoAfter:text(input.dynoAfter ?? old.dynoAfter,50),followUp:text(input.followUp ?? old.followUp,50),
       followMileage:text(input.followMileage ?? old.followMileage,50),reason:text(input.reason),
-      ...dateChanges,
+      ...dateChanges,...billing,
       ...(status==="delivered" && !old.deliveredAt ? {deliveredAt:new Date().toISOString()} : {})})}});
   if(before.vehicleId && text(input.stage,100)){
     const vehicle=await tx.vehicle.findUniqueOrThrow({where:{id:before.vehicleId}});

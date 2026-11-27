@@ -12,6 +12,8 @@ import { PrismaPg } from "@prisma/adapter-pg";
 const suites={
   acceptance:["tests/acceptance.mjs"],
   receipts:["tests/receipts.mjs"],
+  billing:["tests/workshop-billing.mjs"],
+  refunds:["tests/customer-refunds.mjs"],
   roles:["tests/roles.mjs"],
   accountant:["tests/accountant-workflow.mjs"],
   browser:["tests/browser.mjs"],

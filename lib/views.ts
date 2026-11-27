@@ -5,6 +5,9 @@ import { documentAmountDue, due } from "./trade";
 import { day, label, money, type Language } from "./locale";
 import { workSearch, workServiceFilter } from "./visits";
 import { accountName } from "./payment-options";
+import { invoiceSettlements } from "./invoice-settlement";
+import { customerCredits } from "./customer-credit";
+import { openCustomerDebts } from "./customer-debt";
 
 export type Filters={q?:string;from?:string;to?:string;status?:string;party?:string;staff?:string;category?:string;vehicle?:string;page?:string;paymentKind?:PaymentKind;service?:string;date?:string;account?:string};
 export const includes={
@@ -16,7 +19,7 @@ export const includes={
 } as const;
 
 const textLike=(q:string)=>({contains:q,mode:"insensitive" as const});
-function interval(filters:Filters){
+export function interval(filters:Filters){
   let gte:Date|undefined;
   let lt:Date|undefined;
   try{if(filters.from) gte=cairoDayStart(filters.from);}catch{}
@@ -27,18 +30,20 @@ function offset(filters:Filters){return Math.min(Math.max(0,Number.parseInt(filt
 const isCredit = (kind:DocumentKind) => kind==="credit" || kind==="supplierCredit";
 
 async function documentBalanceTotals(ids:string[]) {
-  if (!ids.length) return { settled: new Map<string,bigint>(), credited: new Map<string|null,bigint>() };
-  const [payments, credits] = await Promise.all([
+  if (!ids.length) return { settled: new Map<string,bigint>(), credited: new Map<string|null,bigint>(), applied:new Map<string|null,bigint>() };
+  const [payments, credits, applied] = await Promise.all([
     db.allocation.groupBy({
       by:["documentId"], where:{documentId:{in:ids},releasedAt:null,payment:{reversedAt:null}}, _sum:{amount:true},
     }),
     db.document.groupBy({
       by:["sourceId"], where:{sourceId:{in:ids},kind:{in:["credit","supplierCredit"]},status:"posted"}, _sum:{total:true},
     }),
+    db.customerCreditUse.groupBy({by:["invoiceId"],where:{invoiceId:{in:ids},reversedAt:null},_sum:{amount:true}}),
   ]);
   return {
     settled: new Map(payments.map((row)=>[row.documentId,row._sum.amount ?? 0n])),
     credited: new Map(credits.map((row)=>[row.sourceId,row._sum.total ?? 0n])),
+    applied:new Map(applied.map((row)=>[row.invoiceId,row._sum.amount ?? 0n])),
   };
 }
 
@@ -62,10 +67,10 @@ export async function documents(kinds:DocumentKind[],filters:Filters={},options:
     include:options.detail ? includes : {party:true,vehicle:true,employee:true},orderBy:[{at:"desc"},{number:"desc"}],skip:offset(filters),take:100,
   });
   const ids = rows.filter((row)=>row.status==="posted" && financial(row.kind) && !isCredit(row.kind)).map((row)=>row.id);
-  const { settled, credited } = await documentBalanceTotals(ids);
+  const { settled, credited, applied } = await documentBalanceTotals(ids);
   return plain(await Promise.all(rows.map(async(row)=>{
     const balance = row.status!=="posted" || !financial(row.kind) ? null : isCredit(row.kind) ? await due(db,row)
-      : documentAmountDue(row.total, settled.get(row.id) ?? 0n, credited.get(row.id) ?? 0n);
+      : documentAmountDue(row.total, (settled.get(row.id) ?? 0n)+(applied.get(row.id) ?? 0n), credited.get(row.id) ?? 0n);
     return {...row,due:balance};
   })));
 }
@@ -73,11 +78,8 @@ export const financial=(kind:DocumentKind)=>["invoice","purchase","customerOpeni
 export async function documentDetail(id:string){
   const row=await db.document.findUnique({where:{id,kind:{not:"quote"}},include:includes});
   if(!row) return null;
-  const settlement=row.kind==="invoice"&&row.status==="posted"?{
-    received:row.allocations.filter((item)=>!item.releasedAt&&!item.payment.reversedAt).reduce((sum,item)=>sum+item.amount,0n),
-    credited:row.related.filter((item)=>isCredit(item.kind)&&item.status==="posted").reduce((sum,item)=>sum+item.total,0n),
-  }:null;
-  const balance=settlement?documentAmountDue(row.total,settlement.received,settlement.credited):
+  const settlement=row.kind==="invoice"&&row.status==="posted"?(await invoiceSettlements([row])).get(row.id):null;
+  const balance=settlement?settlement.balance:
     row.status==="posted"&&financial(row.kind)?await due(db,row):null;
   return plain({...row,source:row.source?.kind==="quote"?null:row.source,due:balance,settlement});
 }
@@ -87,7 +89,9 @@ export async function payments(filters:Filters={},id?:string,kinds?:PaymentKind[
   return plain(await db.payment.findMany({where:{id,kind:kinds ? {in:kinds} : kind,at:interval(filters),partyId:filters.party || undefined,employeeId:filters.staff || undefined,
     ...(like?{OR:[{number:like},{note:like},{party:{OR:[{name:like},{phone:like}]}},{employee:{name:like}}]}:{})},
     take:id?1:100,skip:id?0:offset(filters),orderBy:[{at:"desc"},{id:"desc"}],
-    include:{party:true,employee:true,movements:{include:{account:true}},allocations:{include:{document:{select:{id:true,number:true,kind:true,metadata:true}}}}}}));
+    include:{party:true,employee:true,movements:{include:{account:true}},
+      creditUses:{select:{amount:true,reversedAt:true}},creditRefund:{include:{receipt:{select:{id:true,number:true}}}},
+      allocations:{include:{document:{select:{id:true,number:true,kind:true,metadata:true,refundBatchId:true}}}}}}));
 }
 export async function parties(kind:"customer"|"supplier",filters:Filters={},id?:string){
   const like=filters.q ? textLike(filters.q.slice(0,100)) : undefined;
@@ -236,22 +240,34 @@ export async function ledgerSummary(filters:Filters={}){
     margin:total("invoice")-total("credit")-costOfSales,paid:flow.filter((row)=>["supplierPayment","expensePayment","salaryPayment","advance","refund"].includes(row.kind)).reduce((sum,row)=>sum-row.total,0n)});
 }
 async function balances(){
-  const [dueRows,availableRows]=await Promise.all([
+  const [dueRows,availableRows,invoiceCredit]=await Promise.all([
     db.$queryRaw<Array<{kind:string;balance:bigint}>>`
       WITH credits AS (SELECT "sourceId", SUM(total) AS total FROM "Document" WHERE status='posted' AND kind IN ('credit','supplierCredit') GROUP BY "sourceId"),
         paid AS (SELECT a."documentId",SUM(a.amount) AS total FROM "Allocation" a JOIN "Payment" p ON p.id=a."paymentId"
           WHERE p."reversedAt" IS NULL AND a."releasedAt" IS NULL GROUP BY a."documentId")
-      SELECT d.kind::text AS kind, COALESCE(SUM(GREATEST(0,d.total-COALESCE(c.total,0)-COALESCE(p.total,0))),0)::bigint AS balance
+      SELECT d.kind::text AS kind, COALESCE(SUM(GREATEST(0,d.total-COALESCE(c.total,0)-COALESCE(p.total,0)-COALESCE(u.total,0))),0)::bigint AS balance
       FROM "Document" d LEFT JOIN credits c ON c."sourceId"=d.id LEFT JOIN paid p ON p."documentId"=d.id
+      LEFT JOIN (SELECT "invoiceId",SUM(amount) AS total FROM "CustomerCreditUse" WHERE "reversedAt" IS NULL GROUP BY "invoiceId") u ON u."invoiceId"=d.id
       WHERE d.status='posted' AND d.kind IN ('invoice','customerOpening','purchase','supplierOpening','payroll','employeeOpening') GROUP BY d.kind`,
     db.$queryRaw<Array<{kind:string;balance:bigint}>>`
-      SELECT p.kind::text, COALESCE(SUM(p.amount-COALESCE(a.total,0)),0)::bigint AS balance
+      SELECT p.kind::text, COALESCE(SUM(p.amount-COALESCE(a.total,0)-COALESCE(u.total,0)),0)::bigint AS balance
       FROM "Payment" p LEFT JOIN (SELECT "paymentId",SUM(amount) AS total FROM "Allocation" WHERE "releasedAt" IS NULL GROUP BY "paymentId") a ON a."paymentId"=p.id
+      LEFT JOIN (SELECT "receiptId",SUM(amount) AS total FROM "CustomerCreditUse" WHERE "reversedAt" IS NULL GROUP BY "receiptId") u ON u."receiptId"=p.id
       WHERE p."reversedAt" IS NULL AND p.kind IN ('receipt','supplierPayment') GROUP BY p.kind`,
+    db.$queryRaw<{total:bigint}[]>`
+      WITH paid AS (SELECT a."documentId", SUM(a.amount) AS total FROM "Allocation" a JOIN "Payment" p ON p.id=a."paymentId"
+        WHERE p."reversedAt" IS NULL AND a."releasedAt" IS NULL GROUP BY a."documentId"),
+      grouped AS (SELECT c."sourceId", SUM(c.total) AS value, SUM(COALESCE(p.total,0)) AS refunded,
+        SUM(COALESCE(u.total,0)) AS transferred FROM "Document" c LEFT JOIN paid p ON p."documentId"=c.id
+        LEFT JOIN (SELECT "creditId",SUM(amount) AS total FROM "CustomerCreditUse" WHERE "reversedAt" IS NULL GROUP BY "creditId") u ON u."creditId"=c.id
+        WHERE c.kind='credit' AND c.status='posted' GROUP BY c."sourceId")
+      SELECT COALESCE(SUM(GREATEST(0,g.value-i.total+COALESCE(p.total,0)+COALESCE(u.total,0)-g.refunded-g.transferred)),0)::bigint AS total
+      FROM grouped g JOIN "Document" i ON i.id=g."sourceId" LEFT JOIN paid p ON p."documentId"=i.id
+      LEFT JOIN (SELECT "invoiceId",SUM(amount) AS total FROM "CustomerCreditUse" WHERE "reversedAt" IS NULL GROUP BY "invoiceId") u ON u."invoiceId"=i.id`,
   ]);
   const tot=(list:typeof dueRows,kinds:string[])=>list.filter((row)=>kinds.includes(row.kind)).reduce((sum,row)=>sum+row.balance,0n);
   return {debt:tot(dueRows,["invoice","customerOpening"]),supplier:tot(dueRows,["purchase","supplierOpening"]),
-    payroll:tot(dueRows,["payroll","employeeOpening"]),customerCredits:tot(availableRows,["receipt"]),supplierCredits:tot(availableRows,["supplierPayment"])};
+    payroll:tot(dueRows,["payroll","employeeOpening"]),customerCredits:tot(availableRows,["receipt"])+(invoiceCredit[0]?.total ?? 0n),supplierCredits:tot(availableRows,["supplierPayment"])};
 }
 export async function overview(){
   const now=new Date();
@@ -277,21 +293,35 @@ export async function overview(){
 export async function statement(id:string){
   const party=await db.party.findUnique({where:{id}});
   if(!party) return null;
-  const [docs,pays]=await Promise.all([
+  const [docs,pays,uses,debts,credit]=await Promise.all([
     db.document.findMany({where:{partyId:id,kind:{in:["invoice","purchase","credit","supplierCredit","customerOpening","supplierOpening"]},status:{in:["posted","reversed"]}}}),
     db.payment.findMany({where:{partyId:id},include:{allocations:{include:{document:{select:{number:true,id:true}}}}}}),
+    party.kind==="customer"?db.customerCreditUse.findMany({where:{invoice:{partyId:id}},include:{invoice:{select:{id:true,number:true}},
+      credit:{select:{id:true,number:true}},receipt:{select:{id:true,number:true}}}}):[],
+    party.kind==="customer"?openCustomerDebts(db,id):[],
+    party.kind==="customer"?customerCredits(id):null,
   ]);
-  const ledger=[
+  const ledger:{id:string;number:string;kind:string;at:Date;amount:bigint;target:string;
+    links:{id:string;number:string;target?:string;amount?:bigint;released?:boolean}[];allocatedAmount?:bigint}[]=[
     ...docs.flatMap((row)=>{const amount=["credit","supplierCredit"].includes(row.kind)?-row.total:row.total;
       const reverse=(row.metadata as {reversedAt?:string}).reversedAt;
-      const line={id:row.id,number:row.number,kind:row.kind as string,at:row.at,amount,target:"record",links:[] as {id:string;number:string}[]};
+      const source=docs.find((entry)=>entry.id===row.sourceId);
+      const line={id:row.id,number:row.number,kind:row.kind as string,at:row.at,amount,target:"record",links:source?[source]:[]};
       return reverse?[line,{...line,kind:"reversal",at:new Date(reverse),amount:-amount}]:[line];}),
     ...pays.flatMap((row)=>{const amount=["refund","supplierRefund"].includes(row.kind)?row.amount:-row.amount;
-      const line={id:row.id,number:row.number,kind:row.kind as string,at:row.at,amount,target:"payment",links:row.allocations.filter((entry)=>!entry.releasedAt).map((entry)=>entry.document)};
+      const line={id:row.id,number:row.number,kind:row.kind as string,at:row.at,amount,target:"payment",
+        links:row.allocations.map((entry)=>({...entry.document,amount:entry.amount,released:Boolean(entry.releasedAt)}))};
       return row.reversedAt?[line,{...line,kind:"reversal",at:row.reversedAt,amount:-amount}]:[line];}),
+    ...uses.flatMap((use)=>{
+      const source=use.credit ?? use.receipt;
+      if(!source||!use.invoice)return [];
+      const line={id:use.invoice.id,number:use.invoice.number,kind:"creditApplication",at:use.at,amount:0n,allocatedAmount:use.amount,
+        target:"record",links:[{...source,target:use.credit?"record":"payment"},use.invoice]};
+      return use.reversedAt?[line,{...line,kind:"creditApplicationReversal",at:use.reversedAt,allocatedAmount:-use.amount}]:[line];
+    }),
   ].sort((a,b)=>a.at.getTime()-b.at.getTime());
   let balance=0n;
-  return plain({party,rows:ledger.map((row)=>({...row,balance:balance+=row.amount}))});
+  return plain({party,debts,availableCredit:credit?.available ?? null,rows:ledger.map((row)=>({...row,balance:balance+=row.amount}))});
 }
 export const reportDocumentKinds:Record<string,DocumentKind[]> = {
   sales:["invoice","credit"],purchases:["purchase","supplierCredit"],

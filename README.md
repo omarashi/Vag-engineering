@@ -4,9 +4,11 @@ A workshop register for customers, their cars, and the work they need. Use **Job
 
 From a visit, select **Create invoice** and enter the price for each service. The form shows the quantities and saved unit prices of any parts added to the visit and adds everything up in EGP. The printable invoice shows the same itemized prices and the recorded service details.
 
+Enter general labor, electrical work, and electrical labor on the job or when preparing the invoice. Select **Import** for one-off sourced products. Staff with invoice permissions can record the supplier and buying and selling prices. **More → Imports** shows costs, net sales, and gross profit. Record supplier bills separately. **More → Electrical work** shows electrical charges from invoices and jobs awaiting billing. Select the specific line when posting a partial credit so the appropriate report reflects it.
+
 Open **More → Receipts** to find or print a customer receipt. A receipt includes the services, details, and parts from each invoice it pays, plus the amount received and the balance. From a visit, **Record a receipt** records a full or partial payment. If the visit needs an invoice, enter the service prices in the receipt form as well.
 
-Open **Debts** to see customers with an outstanding balance. Select **Record payment** next to the customer, enter the amount received, and save. The app applies the payment to the oldest balances first, updates the list, and links to the receipt. Payment date and account options are available in the payment form.
+Open **Debts → Pay Debt**, select an unpaid invoice, and enter the amount received. For one payment across several invoices, enter each allocation in **Split debt payment**. Open **Refund / Return** from an invoice or customer profile to post an item return or a service credit. The customer profile shows available credit separately from outstanding debt. See the [customer finance guide](docs/customer-finance.md) for refund processing and reconciliation.
 
 Open **More** for invoices, inventory, suppliers, cash, payroll, reports, and administration. From a workshop job, choose **Post job invoice** to enter the charges. Parts already issued to the job appear on the invoice form.
 

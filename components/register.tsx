@@ -39,14 +39,15 @@ export function Info({lang,title="Details",items}:{lang:Language;title?:string;i
 function dropdown(name:string,caption:string,options:Option[],selected?:string){
   return <select name={name} aria-label={caption} defaultValue={selected ?? ""}><option value="">—</option>{options.map((option)=><option key={option.value} value={option.value}>{option.name}</option>)}</select>;
 }
-export function Toolbar({lang,path,filters,dateRange=false,status,party,staff,category=false,workServices=false,report,paymentKinds}:{lang:Language;path:string;filters:Filters;dateRange?:boolean;status?:string[];party?:Option[];staff?:Option[];category?:boolean;workServices?:boolean;report?:string;paymentKinds?:PaymentKind[]}){
+export function Toolbar({lang,path,filters,dateRange=false,status,party,partyLabel="Party",vehicle,staff,category=false,workServices=false,report,paymentKinds}:{lang:Language;path:string;filters:Filters;dateRange?:boolean;status?:string[];party?:Option[];partyLabel?:string;vehicle?:Option[];staff?:Option[];category?:boolean;workServices?:boolean;report?:string;paymentKinds?:PaymentKind[]}){
   const tr=(name:string)=>translate(lang,name);
   return <Form key={JSON.stringify(filters)} className="toolbar" action={path} prefetch={false}>
     {report&&<input type="hidden" name="report" value={report}/>}
     <label className="search-box"><Search size={16}/><input aria-label={tr("Search")} name="q" defaultValue={filters.q} placeholder={tr("Search records")}/></label>
     {dateRange&&<><input aria-label={tr("From")} type="date" name="from" defaultValue={filters.from}/><input aria-label={tr("To")} type="date" name="to" defaultValue={filters.to}/></>}
     {status&&dropdown("status",tr("Status"),status.map((value)=>({value,name:value==="archived"?tr("Archived"):value==="active"?tr("Open"):label(lang,value)})),filters.status)}
-    {party&&dropdown("party",tr("Party"),party,filters.party)}{staff&&dropdown("staff",tr("Employee"),staff,filters.staff)}
+    {party&&dropdown("party",tr(partyLabel),party,filters.party)}{staff&&dropdown("staff",tr("Employee"),staff,filters.staff)}
+    {vehicle&&dropdown("vehicle",tr("Vehicle"),vehicle,filters.vehicle)}
     {paymentKinds&&<select name="paymentKind" aria-label={tr("Payment type")} defaultValue={filters.paymentKind ?? ""}>
       <option value="">{tr("All payment types")}</option>
       {paymentKinds.map((kind)=><option key={kind} value={kind}>{label(lang,kind)}</option>)}

@@ -6,6 +6,9 @@ import { choice, date, integer, list, needed, record, requireRule, text, today, 
 import { isService, selectableServices, serviceTypes, visitServiceTypes } from "./services";
 import { hasServiceTitle, intakeStatuses, jobModes, serviceSummary, visitParts, visitWork, workshopIntake, type VisitPart } from "./visit-items";
 import type { Actor, Change } from "./transaction";
+import { can } from "./permissions";
+import { billingMetadata, hasBillingInput, workshopBillingData } from "./workshop-billing-lines";
+import { billingSelection, billingServiceLabels, billingServices, chargeTypes, savedBillingSelection, workshopCharges, workshopImports } from "./workshop-charges";
 
 async function saveVisitParts(tx: Tx, input: unknown, prior: VisitPart[], visitId?: string) {
   if (input === undefined) return prior;
@@ -88,8 +91,13 @@ async function saveServiceRecord(tx: Tx, input: Input, actor: Actor, kind: "visi
   const mileage = input.mileage == null || input.mileage === "" ? null : integer(input.mileage, 0, 9999999);
   const requested = input.services ?? (input.category ? [input.category] : []);
   const choices = before && visitServiceTypes(before).includes("repair") ? serviceTypes : selectableServices;
-  requireRule(Array.isArray(requested) && requested.length > 0 && requested.length <= choices.length, "needServices");
-  const services = [...new Set(requested.map((service) => choice(service, choices)))];
+  const checklist = input.billingChecklist === true;
+  const allowed = checklist ? [...choices, ...billingServices] : choices;
+  requireRule(Array.isArray(requested) && requested.length <= allowed.length, "needServices");
+  const selected = [...new Set(requested.map((service) => choice(service, allowed)))];
+  const services = selected.filter(isService);
+  const selectedBilling = checklist ? billingServices.filter((service) => selected.includes(service)) : billingSelection(before?.metadata);
+  requireRule(services.length > 0 || selectedBilling.length > 0, "needServices");
   const previousTitle = before && !hasServiceTitle(before.metadata) ? before.title : "";
   const customTitle = input.title === undefined ? previousTitle : needed(input.title, 180);
   const inputDetails = input.serviceDetails === undefined
@@ -97,12 +105,33 @@ async function saveServiceRecord(tx: Tx, input: Input, actor: Actor, kind: "visi
     : record(input.serviceDetails);
   const serviceDetails = Object.fromEntries(services.map((service) => [service, text(inputDetails[service], 2000)]));
   const parts = await saveVisitParts(tx, input.parts, visitParts(before?.metadata), before?.id);
+  let billing = {};
+  const pricing = hasBillingInput(input);
+  if (checklist || pricing) {
+    if (before) requireRule(!await tx.document.findFirst({ where: { sourceId: before.id, kind: "invoice", status: "posted" } }), "alreadyPosted", 409);
+  }
+  if (checklist) {
+    requireRule(!pricing, "invoicePricingAfterSave");
+    const importRequested = selectedBilling.includes("importedItem");
+    const charges = workshopCharges(before?.metadata);
+    billing = {
+      workshopBillingSelection: selectedBilling,
+      workshopCharges: Object.fromEntries(chargeTypes.filter((type) => selectedBilling.includes(type) && charges[type] !== undefined)
+        .map((type) => [type, charges[type]])),
+      importRequested,
+      importItems: importRequested ? workshopImports(before?.metadata) : [],
+    };
+  } else if (pricing) {
+    requireRule(!savedBillingSelection(before?.metadata), "invoicePricingAfterSave");
+    requireRule(input.importItems === undefined || can(actor.role, "visitInvoice"), "forbidden", 403);
+    billing = billingMetadata(await workshopBillingData(tx, before?.metadata, input));
+  }
   const details = {
     at,
-    category: services[0],
-    title: customTitle || serviceSummary("en", services),
+    category: services[0] ?? selectedBilling[0],
+    title: customTitle || serviceSummary("en", services) || selectedBilling.map((service) => billingServiceLabels[service]).join(", "),
     note: text(input.note),
-    metadata: json({ ...(before?.metadata as object), mileage, services, serviceDetails, parts, serviceTitle: !customTitle, ...intake }),
+    metadata: json({ ...(before?.metadata as object), mileage, services, serviceDetails, parts, serviceTitle: !customTitle, ...intake, ...billing }),
   };
 
   if (before) {

@@ -8,7 +8,7 @@ import { addDays, cairoDayStart, cents, choice, date, needed, requireRule, RuleE
 import { divideHalfUp } from "./decimal-input";
 import { due } from "./trade";
 import type { Actor, Change } from "./transaction";
-import { absenceDate, pendingAbsencesForWeek, requirePayrollOpen, weekStarting } from "./payroll-rules";
+import { absenceDate, currentWeekEnding, payrollPayday, payrollPeriodStarting, pendingAbsencesForWeek, requirePayrollOpen, weekStarting } from "./payroll-rules";
 
 export { absenceDate, pendingAbsencesForWeek, weekStarting } from "./payroll-rules";
 
@@ -16,11 +16,6 @@ const weeklyCategory = "weekly";
 
 export function payrollDate(value: unknown) {
   return today(date(needed(value, 10)));
-}
-
-export function currentWeekEnding(day = today()) {
-  const weekday = new Date(day + "T12:00:00Z").getUTCDay();
-  return addDays(day, (5 - weekday + 7) % 7);
 }
 
 export function selectedWeekEnding(value?: string) {
@@ -48,10 +43,12 @@ function weeklyDocuments(employeeId: string) {
   return { employeeId, kind: "payroll", category: weeklyCategory, status: "posted" } as const;
 }
 
-function weekContaining(tx: Tx, employeeId: string, day: string) {
-  return tx.document.findFirst({
+async function weekContaining(tx: Tx, employeeId: string, day: string) {
+  const periods = await tx.document.findMany({
     where: { ...weeklyDocuments(employeeId), reference: { gte: day, lte: addDays(day, 6) } },
+    orderBy: { reference: "asc" },
   });
+  return periods.find((period) => payrollPeriodStarting(period) <= day);
 }
 
 export async function employeeWeekEnding(employeeId: string, day: string) {
@@ -66,18 +63,19 @@ function overlappingWeek(tx: Tx, employeeId: string, week: string) {
 }
 
 async function openWeeklyRecord(tx: Tx, employeeId: string, week: string, at: string, gross: bigint, actor: Actor) {
+  const workweekStart = weekStarting(week);
   const period = await document(tx, actor, "payroll", {
-    ...weeklyDocuments(employeeId), title: "Weekly payroll", reference: week, at: date(at), metadata: { locked: false },
+    ...weeklyDocuments(employeeId), title: "Weekly payroll", reference: week, at: date(at), metadata: { locked: false, workweekStart },
     snapshot: await snapshot(tx, null, null, employeeId),
   });
-  const base = await payEntry(tx, { id: period.id, kind: "base", amount: moneyInput(gross), at: weekStarting(week) }, actor);
+  const base = await payEntry(tx, { id: period.id, kind: "base", amount: moneyInput(gross), at: workweekStart }, actor);
   return base.after.period;
 }
 
 async function applyAbsenceDeductions(tx: Tx, employee: Employee, period: Document, remaining: bigint, actor: Actor) {
   requirePayrollOpen(period);
   const pending = await tx.employeeAbsence.findMany({
-    where: pendingAbsencesForWeek(employee.id, period.reference),
+    where: pendingAbsencesForWeek(employee.id, period.reference, payrollPeriodStarting(period)),
     orderBy: { day: "asc" },
   });
   if (!pending.length) return { remaining, pending: 0 };
@@ -134,7 +132,7 @@ export function payrollSummary(employee: Pick<Employee, "weeklySalary">, period:
   const allocations = period?.allocations.filter(row=>!row.releasedAt && !row.payment.reversedAt) ?? [];
   const advances = allocations.filter(row=>row.payment.kind==="advance");
   const totalAdvances = advances.reduce((sum,row)=>sum+row.amount,0n);
-  const carried = period ? advances.filter(row=>today(row.payment.at)<weekStarting(period.reference)).reduce((sum,row)=>sum+row.amount,0n) : 0n;
+  const carried = period ? advances.filter(row=>today(row.payment.at)<payrollPeriodStarting(period)).reduce((sum,row)=>sum+row.amount,0n) : 0n;
   const paid = allocations.filter(row=>row.payment.kind==="salaryPayment").reduce((sum,row)=>sum+row.amount,0n);
   const deductionIds = new Set(period?.payroll.filter(row=>row.kind==="deduction" || row.kind==="openingRecovery").map(row=>row.id));
   const deductions = -(period?.payroll.filter(row=>deductionIds.has(row.id) || row.kind==="correction" && deductionIds.has(row.reference))
@@ -145,8 +143,7 @@ export function payrollSummary(employee: Pick<Employee, "weeklySalary">, period:
 }
 
 export function payrollWeek(start: string, staff?: string, search?: string) {
-  const end = addDays(start,5);
-  const friday = addDays(start,4);
+  const end = currentWeekEnding(start);
   const from = cairoDayStart(start);
   const to = cairoDayStart(addDays(end,1));
   return db.employee.findMany({
@@ -156,8 +153,8 @@ export function payrollWeek(start: string, staff?: string, search?: string) {
     },
     include:{
       documents:{
-        where:{kind:"payroll",status:"posted",category:weeklyCategory,reference:{gte:friday,lte:addDays(friday,6)}},
-        orderBy:{reference:"asc"},take:1,include:weeklyDetails,
+        where:{kind:"payroll",status:"posted",category:weeklyCategory,reference:{gte:start,lte:addDays(end,1)}},
+        orderBy:{reference:"desc"},take:1,include:weeklyDetails,
       },
       absences:{
         where:{day:{gte:absenceDate(start),lte:absenceDate(end)},voidedAt:null},
@@ -207,7 +204,7 @@ export async function employeeAbsence(tx: Tx, input: Input, actor: Actor): Promi
   }
   if (action !== "undo") {
     let period = await weekContaining(tx, employeeId, day);
-    let week = period?.reference ?? currentWeekEnding(day);
+    const week = period?.reference ?? currentWeekEnding(day);
     let remaining = period ? await due(tx, period) : 0n;
     const deductionFromDay: Date | null = null;
     const entry = await tx.employeeAbsence.upsert({
@@ -249,7 +246,7 @@ export async function weeklyPayroll(tx: Tx, input: Input, actor: Actor): Promise
   const employee = await tx.employee.findUnique({ where: { id: employeeId } });
   requireRule(employee, "invalidEmployee");
   const kind = choice(input.kind, ["deduction", "advance", "salaryPayment"] as const);
-  let week = payrollDate(input.weekEnding);
+  const week = payrollDate(input.weekEnding);
   const at = payrollDate(input.at);
   requireRule(at <= today() && at >= today(employee.startedAt), "invalidDate");
   if (kind === "advance") requireRule(employedOn(employee, today()), "employeeInactive");
@@ -261,6 +258,9 @@ export async function weeklyPayroll(tx: Tx, input: Input, actor: Actor): Promise
   let remaining = period ? await due(tx, period) : 0n;
   if (input.expectedBalance !== undefined) requireRule(input.expectedBalance === String(remaining), "stale", 409);
   if (input.targetWeek !== undefined) requireRule(input.targetWeek === week && input.targetPeriodId === (period?.id ?? ""), "stale", 409);
+  if (!period) requireRule(week === currentWeekEnding(week), "payrollWeekSaturday");
+  const payday = period ? payrollPayday(period) : week;
+  if (kind === "salaryPayment" && payday) requireRule(at >= payday, "salaryBeforePayday");
   if (!period) {
     requireRule(workedDuringWeek(employee, week), "employeeInactive");
     requireRule(!await overlappingWeek(tx, employeeId, week), "overlappingPayrollWeek", 409);

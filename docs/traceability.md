@@ -77,7 +77,7 @@ The [source requirements](requirements.md) define each ID. The implementation li
 | ✓ FR-SAL-09 | [lib/trade.ts](../lib/trade.ts) · [lib/cash.ts](../lib/cash.ts) | AT-02, AT-03, AT-05, AT-08, AT-11 and A4 |
 | ✓ FR-SAL-10 | [lib/trade.ts](../lib/trade.ts) · [lib/cash.ts](../lib/cash.ts) | AT-02, AT-03, AT-05, AT-08, AT-11 and A4 |
 | ✓ FR-SAL-11 | [lib/trade.ts](../lib/trade.ts) · [lib/cash.ts](../lib/cash.ts) | AT-02, AT-03, AT-05, AT-08, AT-11 and A4 |
-| ✓ FR-BAL-01 | [lib/cash.ts](../lib/cash.ts) · [lib/customer-debt.ts](../lib/customer-debt.ts) · [components/customer-debt.tsx](../components/customer-debt.tsx) | AT-02, AT-07, AT-08 and AT-12. The [receipt and debt tests](../tests/receipts.mjs) cover manual payments without due dates, oldest-first allocation across vehicles and opening balances, reprints, overpayment, and reversals. |
+| ✓ FR-BAL-01 | [lib/cash.ts](../lib/cash.ts) · [lib/customer-debt.ts](../lib/customer-debt.ts) · [components/customer-debt.tsx](../components/customer-debt.tsx) | AT-02, AT-07, AT-08 and AT-12. The [receipt and debt tests](../tests/receipts.mjs) cover manual payments without due dates, explicit allocations across invoices and opening balances, reprints, overpayment, and reversals. |
 | ✓ FR-BAL-02 | [lib/cash.ts](../lib/cash.ts) · [lib/views.ts](../lib/views.ts) | AT-02, AT-07, AT-08 and AT-12 |
 | ✓ FR-BAL-03 | [lib/cash.ts](../lib/cash.ts) · [lib/views.ts](../lib/views.ts) | AT-02, AT-07, AT-08 and AT-12 |
 | ✓ FR-BAL-04 | [lib/cash.ts](../lib/cash.ts) · [lib/views.ts](../lib/views.ts) | AT-02, AT-07, AT-08 and AT-12 |

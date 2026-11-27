@@ -1,10 +1,9 @@
 import { readFile, unlink } from "node:fs/promises";
-import { join } from "node:path";
 import { currentUser, mutationUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { requireRule, RuleError } from "@/lib/rules";
 import { audit, lockedMutation } from "@/lib/transaction";
-import { attachmentRoot } from "@/lib/storage";
+import { attachmentKeyPattern, attachmentPath } from "@/lib/storage";
 import { workshopPhotosOn } from "@/lib/workshop-photos";
 import { canAccessAttachment, isWorkshopRecord } from "@/lib/permissions";
 
@@ -18,7 +17,7 @@ export async function GET(request: Request, { params }: Context) {
     where: { id, OR: [{ documentId: null }, { document: { kind: { not: "quote" } } }] },
     include: { document: { select: { kind: true } } },
   });
-  if (!file || !/^[a-f0-9-]{36}$/.test(file.key) ||
+  if (!file || !attachmentKeyPattern.test(file.key) ||
     !canAccessAttachment(actor.role, { vehicleId: file.vehicleId, documentKind: file.document?.kind })) {
     return Response.json({ error: "notFound" }, { status: 404 });
   }
@@ -26,7 +25,7 @@ export async function GET(request: Request, { params }: Context) {
   if (photo && !await workshopPhotosOn()) return Response.json({ error: "notFound" }, { status: 404 });
 
   try {
-    const data = await readFile(join(attachmentRoot(), file.key));
+    const data = await readFile(await attachmentPath(file.key));
     const disposition = photo && new URL(request.url).searchParams.get("preview") === "1" ? "inline" : "attachment";
     return new Response(new Uint8Array(data), { headers: {
       "Content-Type": file.mime,
@@ -34,7 +33,8 @@ export async function GET(request: Request, { params }: Context) {
       "X-Content-Type-Options": "nosniff",
       "Cache-Control": "private, no-store",
     } });
-  } catch {
+  } catch (error) {
+    if (error instanceof RuleError) return Response.json({ error: error.code }, { status: error.status });
     return Response.json({ error: "notFound" }, { status: 404 });
   }
 }
@@ -43,7 +43,7 @@ export async function DELETE(request: Request, { params }: Context) {
   const { id } = await params;
   try {
     const actor = await mutationUser(request);
-    const key = await lockedMutation(actor, async (tx) => {
+    const path = await lockedMutation(actor, async (tx) => {
       const file = await tx.attachment.findUnique({
         where: { id }, include: { document: { select: { kind: true, status: true } } },
       });
@@ -51,12 +51,14 @@ export async function DELETE(request: Request, { params }: Context) {
       requireRule(isWorkshopRecord(file.document?.kind) && file.mime.startsWith("image/"), "notFound", 404);
       requireRule(file.document?.status !== "cancelled", "forbidden", 403);
       requireRule(await workshopPhotosOn(tx), "photosDisabled", 403);
+      requireRule(attachmentKeyPattern.test(file.key), "notFound", 404);
+      const path = await attachmentPath(file.key);
       await tx.attachment.delete({ where: { id } });
       await audit(tx, actor.id, "removePhoto", "attachment", id, { name: file.name, documentId: file.documentId }, null);
-      return file.key;
+      return path;
     });
-    if (key && /^[a-f0-9-]{36}$/.test(key)) {
-      await unlink(join(attachmentRoot(), key)).catch((error: NodeJS.ErrnoException) => {
+    if (path) {
+      await unlink(path).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== "ENOENT") console.warn("Could not remove the workshop photo file", { id, code: error.code });
       });
     }

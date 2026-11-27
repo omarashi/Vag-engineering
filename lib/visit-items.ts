@@ -1,5 +1,6 @@
 import { translate, type Language } from "./locale";
 import { serviceName, type ServiceType, visitServiceTypes } from "./services";
+import { billingSelection, billingServiceLabels } from "./workshop-charges";
 
 export type VisitPartInput = { partId: string; quantity: string };
 export type VisitPart = VisitPartInput & { name: string; code: string; unitPrice: string };
@@ -35,7 +36,8 @@ export function serviceSummary(lang: Language, services: ServiceType[]) {
 }
 
 export function visitTitle(lang: Language, row: { title: string; category: string; metadata: unknown }) {
-  const title = hasServiceTitle(row.metadata) ? serviceSummary(lang, visitServiceTypes(row)) : row.title;
+  const title = hasServiceTitle(row.metadata) ? serviceSummary(lang, visitServiceTypes(row)) || billingSelection(row.metadata)
+    .map((service) => translate(lang, billingServiceLabels[service])).join(lang === "ar" ? "، " : ", ") : row.title;
   return title || translate(lang, "Workshop visit");
 }
 
